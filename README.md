@@ -16,7 +16,6 @@ irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/winget2.ps1 | iex
 ```
 
 ### Các Script hiện có:
-- `winget.ps1`: Kịch bản nền tảng cơ bản, dùng để setup Winget.
 - `winget2.ps1`: Kịch bản hoàn chỉnh, tích hợp thêm phần cài đặt tự động danh sách các phần mềm thiết yếu và thư viện cho máy tính.
 
 ---
