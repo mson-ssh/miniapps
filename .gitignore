@@ -1,0 +1,20 @@
+# Lịch sử PowerShell
+*.clixml
+*.csv
+*.json
+*.xml
+
+# File tạm thời và logs
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# Thư mục cấu hình của trình soạn thảo (nếu anh không muốn chia sẻ lên mạng)
+.vscode/
+.idea/
+
+# File hệ thống Windows
+Thumbs.db
+Desktop.ini
