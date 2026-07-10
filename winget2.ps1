@@ -55,10 +55,16 @@ $apps = @(
     "PhamKimLong.UniKey",
     "RARLab.WinRAR",
     "ZaloGroup.Zalo",
-    "Zoom.Zoom"
+    "Zoom.Zoom",
+    "Microsoft.VCRedist.2012.x86",
+    "Microsoft.VCRedist.2012.x64",
+    "Microsoft.VCRedist.2013.x86",
+    "Microsoft.VCRedist.2013.x64",
+    "Microsoft.VCRedist.2015+.x86",
+    "Microsoft.VCRedist.2015+.x64"
 )
 
-Write-Host "`n[Bat dau] Tien hanh cai dat 8 phan mem che do Silent..." -ForegroundColor Cyan
+Write-Host "`n[Bat dau] Tien hanh cai dat $($apps.Count) phan mem che do Silent..." -ForegroundColor Cyan
 
 foreach ($app in $apps) {
     Write-Host "-> Dang cai dat: $app" -ForegroundColor Yellow
