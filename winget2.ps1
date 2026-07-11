@@ -65,43 +65,91 @@ function Install-NecessaryApps {
             if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
             $tempExe = "$tempDir\$Name.exe"
             
-            Write-Output "[+] Dang tai $Name..."
             $success = $false
             try {
                 Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -ErrorAction Stop
-                Write-Output "[*] Dang cai dat $Name..."
+                Write-Output "STATE:$Name:Installing"
                 $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -Wait -PassThru -NoNewWindow
                 if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
                     $success = $true 
-                    Write-Output "[V] Da cai xong $Name!"
+                    Write-Output "STATE:$Name:Done"
                 } else {
-                    Write-Output "[X] Loi cai dat $Name (Exit Code: $($proc.ExitCode))"
+                    Write-Output "STATE:$Name:Error"
                 }
             } catch { 
-                Write-Output "[X] Loi tai/cai dat $Name..."
+                Write-Output "STATE:$Name:Error"
             }
 
             if (-not $success -and $WingetId) {
-                Write-Output "[!] Dang chuyen sang cai $Name qua Winget..."
+                Write-Output "STATE:$Name:Winget"
                 $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -PassThru -NoNewWindow
-                if ($proc.ExitCode -eq 0) { Write-Output "[V] Da cai xong $Name (Winget)!" }
+                if ($proc.ExitCode -eq 0) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
             }
         } -ArgumentList $app.Name, $app.Url, $app.WingetId, $app.Args
         $jobs += $job
     }
 
-    # 4. Hien thi truc quan tien trinh chay ngam
+    # 4. Hien thi truc quan tien trinh chay ngam (Bang trang thai dong)
     Write-Host "`n[Tien Trinh] Dang xu ly cac ung dung song song..." -ForegroundColor Cyan
+    
+    $appStates = @{}
+    foreach ($app in $parallelApps) {
+        $appStates[$app.Name] = "Downloading"
+    }
+
+    $startTop = [Console]::CursorTop
+    foreach ($app in $parallelApps) {
+        Write-Host "   [+] $($app.Name) - $($appStates[$app.Name])" -ForegroundColor Yellow
+    }
+
     while ($jobs.State -contains 'Running') {
+        $newData = $false
         foreach ($job in $jobs) {
             if ($job.HasMoreData) {
-                Receive-Job -Job $job | ForEach-Object { Write-Host "   $_" -ForegroundColor Yellow }
+                $outputs = Receive-Job -Job $job
+                foreach ($out in $outputs) {
+                    if ($out -match "^STATE:(.+?):(.+)$") {
+                        $appName = $matches[1]
+                        $appState = $matches[2]
+                        if ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
+                        elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
+                        elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
+                        elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
+                        $newData = $true
+                    }
+                }
             }
         }
-        Start-Sleep -Milliseconds 300
+        
+        if ($newData) {
+            [Console]::SetCursorPosition(0, $startTop)
+            foreach ($app in $parallelApps) {
+                $line = "   [+] $($app.Name) - $($appStates[$app.Name])"
+                Write-Host $line.PadRight(80) -ForegroundColor Yellow
+            }
+        }
+        Start-Sleep -Milliseconds 200
     }
+    
     # Nhan not du lieu cuoi cung (neu co)
-    Receive-Job -Job $jobs | ForEach-Object { Write-Host "   $_" -ForegroundColor Yellow }
+    $outputs = Receive-Job -Job $jobs
+    if ($outputs) {
+        foreach ($out in $outputs) {
+            if ($out -match "^STATE:(.+?):(.+)$") {
+                $appName = $matches[1]
+                $appState = $matches[2]
+                if ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
+                elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
+                elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
+                elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
+            }
+        }
+        [Console]::SetCursorPosition(0, $startTop)
+        foreach ($app in $parallelApps) {
+            $line = "   [+] $($app.Name) - $($appStates[$app.Name])"
+            Write-Host $line.PadRight(80) -ForegroundColor Yellow
+        }
+    }
     Remove-Job $jobs | Out-Null
     Wait-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
