@@ -83,7 +83,7 @@ function Install-NecessaryApps {
             if (-not $success -and $WingetId) {
                 Write-Output "STATE:$Name:Winget"
                 $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -PassThru -NoNewWindow
-                if ($proc.ExitCode -eq 0) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
+                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
             }
         } -ArgumentList $app.Name, $app.Url, $app.WingetId, $app.Args
         $jobs += $job
