@@ -99,7 +99,7 @@ function Install-NecessaryApps {
 
     $startTop = [Console]::CursorTop
     foreach ($app in $parallelApps) {
-        Write-Host "   [+] $($app.Name) - $($appStates[$app.Name])" -ForegroundColor Yellow
+        Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]) -ForegroundColor Yellow
     }
 
     while ($jobs.State -contains 'Running') {
@@ -124,7 +124,7 @@ function Install-NecessaryApps {
         if ($newData) {
             [Console]::SetCursorPosition(0, $startTop)
             foreach ($app in $parallelApps) {
-                $line = "   [+] $($app.Name) - $($appStates[$app.Name])"
+                $line = "   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]
                 Write-Host $line.PadRight(80) -ForegroundColor Yellow
             }
         }
@@ -146,7 +146,7 @@ function Install-NecessaryApps {
         }
         [Console]::SetCursorPosition(0, $startTop)
         foreach ($app in $parallelApps) {
-            $line = "   [+] $($app.Name) - $($appStates[$app.Name])"
+            $line = "   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]
             Write-Host $line.PadRight(80) -ForegroundColor Yellow
         }
     }
