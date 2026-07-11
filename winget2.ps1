@@ -162,25 +162,27 @@ function Install-NecessaryApps {
     }
     
     # Process any final outputs
-    $outputs = Receive-Job -Job $jobs
-    if ($outputs) {
-        foreach ($out in $outputs) {
-            if ($out -match "^STATE:(.+?):(.+)$") {
-                $appName = $matches[1]
-                $appState = $matches[2]
-                if ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
-                elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
-                elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
-                elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
+    if ($jobs.Count -gt 0) {
+        $outputs = Receive-Job -Job $jobs
+        if ($outputs) {
+            foreach ($out in $outputs) {
+                if ($out -match "^STATE:(.+?):(.+)$") {
+                    $appName = $matches[1]
+                    $appState = $matches[2]
+                    if ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
+                    elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
+                    elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
+                    elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
+                }
+            }
+            [Console]::SetCursorPosition(0, $startTop)
+            foreach ($app in $parallelApps) {
+                $line = "   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]
+                Write-Host $line.PadRight(80) -ForegroundColor Yellow
             }
         }
-        [Console]::SetCursorPosition(0, $startTop)
-        foreach ($app in $parallelApps) {
-            $line = "   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]
-            Write-Host $line.PadRight(80) -ForegroundColor Yellow
-        }
+        Remove-Job $jobs | Out-Null
     }
-    Remove-Job $jobs | Out-Null
     Wait-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
 
