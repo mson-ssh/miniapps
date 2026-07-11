@@ -105,11 +105,20 @@ function Install-NecessaryApps {
             try {
                 Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -ErrorAction Stop
                 Write-Output "STATE:$Name:Installing"
-                $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -Wait -PassThru -NoNewWindow
-                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
-                    $success = $true 
-                    Write-Output "STATE:$Name:Done"
-                } else {
+                
+                $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                
+                try {
+                    $timeout = if ($Name -eq "Office 2024") { 1800 } else { 180 }
+                    $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
+                    if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
+                        $success = $true 
+                        Write-Output "STATE:$Name:Done"
+                    } else {
+                        Write-Output "STATE:$Name:Error"
+                    }
+                } catch {
+                    $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                     Write-Output "STATE:$Name:Error"
                 }
             } catch { 
@@ -118,8 +127,14 @@ function Install-NecessaryApps {
 
             if (-not $success -and $WingetId) {
                 Write-Output "STATE:$Name:Winget"
-                $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -PassThru -NoNewWindow
-                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
+                $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
+                try {
+                    $proc | Wait-Process -Timeout 180 -ErrorAction Stop
+                    if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
+                } catch {
+                    $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                    Write-Output "STATE:$Name:Error"
+                }
             }
         } -ArgumentList $app.Name, $app.Url, $app.WingetId, $app.Args
         $jobs += $job
