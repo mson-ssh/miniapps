@@ -103,7 +103,18 @@ function Install-NecessaryApps {
             
             $success = $false
             try {
-                Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -ErrorAction Stop
+                $maxRetries = 3; $retry = 0; $downloaded = $false
+                while ($retry -lt $maxRetries -and -not $downloaded) {
+                    try {
+                        Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                        $downloaded = $true
+                    } catch {
+                        $retry++
+                        if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
+                    }
+                }
+                if (-not $downloaded) { throw "Download failed" }
+
                 Write-Output "STATE:$Name:Installing"
                 
                 $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
@@ -212,18 +223,39 @@ function Install-NecessaryApps {
         $tempExe = "$env:TEMP\MiniAZ_Apps\$($app.Name).exe"
         $success = $false
         try {
-            Invoke-WebRequest -Uri $app.Url -OutFile $tempExe -UseBasicParsing -ErrorAction Stop
-            $proc = Start-Process -FilePath $tempExe -ArgumentList $app.Args -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
-                $success = $true 
-                Write-Host "   [OK] Successfully installed: $($app.Name)" -ForegroundColor Green
+            $maxRetries = 3; $retry = 0; $downloaded = $false
+            while ($retry -lt $maxRetries -and -not $downloaded) {
+                try {
+                    Invoke-WebRequest -Uri $app.Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                    $downloaded = $true
+                } catch {
+                    $retry++
+                    if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
+                }
+            }
+            if (-not $downloaded) { throw "Download failed" }
+
+            $proc = Start-Process -FilePath $tempExe -ArgumentList $app.Args -PassThru -NoNewWindow
+            try {
+                $proc | Wait-Process -Timeout 180 -ErrorAction Stop
+                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
+                    $success = $true 
+                    Write-Host "   [OK] Successfully installed: $($app.Name)" -ForegroundColor Green
+                }
+            } catch {
+                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
             }
         } catch { }
 
         if (-not $success) {
             Write-Host "   [Error] Falling back to Winget for $($app.Name)..." -ForegroundColor Blue
-            $proc = Start-Process winget -ArgumentList "install --id $($app.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Host "   [OK] Successfully installed via Winget: $($app.Name)" -ForegroundColor Green }
+            $proc = Start-Process winget -ArgumentList "install --id $($app.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
+            try {
+                $proc | Wait-Process -Timeout 180 -ErrorAction Stop
+                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Host "   [OK] Successfully installed via Winget: $($app.Name)" -ForegroundColor Green }
+            } catch {
+                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 
