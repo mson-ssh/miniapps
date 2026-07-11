@@ -13,10 +13,10 @@ function Install-NecessaryApps {
     $diskJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/disk.ps1 | iex }
     Write-Host "-> Da kich hoat ngam tien trinh Config.ps1 va disk.ps1!" -ForegroundColor Gray
 
-    # 2. Kiem tra va cai dat Winget ngam
+    # 2. Kiem tra va cai dat Winget ngam (Dung de Fallback)
     $wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
     if (-not $wingetCheck) {
-        Write-Host "-> Chua co Winget hoac phien ban qua cu. Bat dau tu dong thiet lap ngam..." -ForegroundColor Yellow
+        Write-Host "-> Chua co Winget. Bat dau tu dong thiet lap ngam Winget..." -ForegroundColor Yellow
         $tempDir = "$env:TEMP\winget-init"
         if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir | Out-Null }
         
@@ -32,59 +32,82 @@ function Install-NecessaryApps {
             Add-AppxPackage -Path "$tempDir\VCLibs.appx" -ErrorAction SilentlyContinue
             Add-AppxPackage -Path "$tempDir\UiXaml.appx" -ErrorAction SilentlyContinue
             Add-AppxPackage -Path "$tempDir\Winget.msixbundle" -ErrorAction SilentlyContinue
-            
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             & winget source update --quiet | Out-Null
-        }
-        catch {
-            Write-Host "[LOI] Khong the tu dong cai Winget: $_" -ForegroundColor Red
-            return
-        }
+        } catch { }
     } else {
         & winget source update --quiet | Out-Null
     }
 
-    # 3. Cai dat cac phan mem can thiet
-    $apps = @(
-        "Google.Chrome",
-        "CodecGuide.K-LiteCodecPack.Mega",
-        "Telegram.TelegramDesktop",
-        "DucFabulous.UltraViewer",
-        "RARLab.WinRAR",
-        "VNGCorp.Zalo",
-        "Zoom.Zoom",
-        "Microsoft.VCRedist.2012.x86",
-        "Microsoft.VCRedist.2012.x64",
-        "Microsoft.VCRedist.2013.x86",
-        "Microsoft.VCRedist.2013.x64",
-        "Microsoft.VCRedist.2015+.x86",
-        "Microsoft.VCRedist.2015+.x64"
+    # 3. Cai dat cac phan mem uu tien tai Direct Link tu R2 Cloudflare
+    $parallelApps = @(
+        @{ Name="EVKey"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId=""; Args="-s" },
+        @{ Name="Chrome"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId="Google.Chrome"; Args="/silent /install" },
+        @{ Name="Klite"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/klite.exe"; WingetId="CodecGuide.K-LiteCodecPack.Mega"; Args="/verysilent" },
+        @{ Name="Telegram"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/tele.exe"; WingetId="Telegram.TelegramDesktop"; Args="/VERYSILENT" },
+        @{ Name="Ultraview"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId="DucFabulous.UltraViewer"; Args="/S" },
+        @{ Name="WinRAR"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId="RARLab.WinRAR"; Args="/S" },
+        @{ Name="Zalo"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId="VNGCorp.Zalo"; Args="/S" },
+        @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent" }
     )
 
-    Write-Host "`n[Bat dau] Tien hanh cai dat $($apps.Count) phan mem che do Silent..." -ForegroundColor Cyan
+    $sequentialApps = @(
+        @{ Name="VCRedist x64"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe"; WingetId="Microsoft.VCRedist.2015+.x64"; Args="/install /quiet /norestart" },
+        @{ Name="VCRedist x86"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId="Microsoft.VCRedist.2015+.x86"; Args="/install /quiet /norestart" }
+    )
 
-    foreach ($app in $apps) {
-        Write-Host "-> Dang cai dat: $app" -ForegroundColor Yellow
-        $process = Start-Process winget -ArgumentList "install --id $app --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -NoNewWindow -PassThru -Wait
-        
-        if ($process.ExitCode -eq 0) {
-            Write-Host "   [OK] Cài dat thanh cong: $app" -ForegroundColor Green
-        }
-        else {
-            if ($process.ExitCode -eq -1978335201) {
-                Write-Host "   [Ghi chu] $app da co san phien ban moi nhat tren he thong." -ForegroundColor Blue
+    Write-Host "`n[Bat dau] Tai va cai dat song song $($parallelApps.Count) phan mem chinh..." -ForegroundColor Cyan
+    $jobs = @()
+    foreach ($app in $parallelApps) {
+        Write-Host "-> Dang kich hoat luong tai ngam cho: $($app.Name)" -ForegroundColor Yellow
+        $job = Start-Job -ScriptBlock {
+            param($Name, $Url, $WingetId, $ArgsStr)
+            $tempDir = "$env:TEMP\MiniAZ_Apps"
+            if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
+            $tempExe = "$tempDir\$Name.exe"
+            
+            $success = $false
+            try {
+                Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -ErrorAction Stop
+                $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -Wait -PassThru -NoNewWindow
+                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { $success = $true }
+            } catch { }
+
+            if (-not $success -and $WingetId) {
+                # Fallback sang Winget
+                Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -NoNewWindow | Out-Null
             }
-            else {
-                Write-Host "   [LOI] Gap loi khi cai $app. Ma loi (Exit Code): $($process.ExitCode)" -ForegroundColor Red
-            }
-        }
+        } -ArgumentList $app.Name, $app.Url, $app.WingetId, $app.Args
+        $jobs += $job
     }
 
     # 4. Doi cac tien trinh chay ngam hoan tat
-    Write-Host "`n[Tien Trinh] Dang cho Config.ps1 va disk.ps1 hoan tat (neu chua xong)..." -ForegroundColor Cyan
+    Write-Host "`n[Tien Trinh] Dang doi cac ung dung cai song song va thiet lap he thong hoan tat..." -ForegroundColor Cyan
+    Wait-Job $jobs | Out-Null
+    Remove-Job $jobs | Out-Null
     Wait-Job $configJob, $diskJob | Out-Null
-    Receive-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
+
+    Write-Host "`n[Bat dau] Cai dat tuan tu cac phan mem nen tang (VC Redist)..." -ForegroundColor Cyan
+    foreach ($app in $sequentialApps) {
+        Write-Host "-> Dang cai dat: $($app.Name)" -ForegroundColor Yellow
+        $tempExe = "$env:TEMP\MiniAZ_Apps\$($app.Name).exe"
+        $success = $false
+        try {
+            Invoke-WebRequest -Uri $app.Url -OutFile $tempExe -UseBasicParsing -ErrorAction Stop
+            $proc = Start-Process -FilePath $tempExe -ArgumentList $app.Args -Wait -PassThru -NoNewWindow
+            if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
+                $success = $true 
+                Write-Host "   [OK] Cài dat thanh cong: $($app.Name)" -ForegroundColor Green
+            }
+        } catch { }
+
+        if (-not $success) {
+            Write-Host "   [Loi] Chuyen sang cai qua Winget cho $($app.Name)..." -ForegroundColor Blue
+            $proc = Start-Process winget -ArgumentList "install --id $($app.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -PassThru -NoNewWindow
+            if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Host "   [OK] Cài dat thanh cong qua Winget: $($app.Name)" -ForegroundColor Green }
+        }
+    }
 
     Write-Host "`n[Hoan tat] Toan bo qua trinh cai dat va thiet lap ket thuc!" -ForegroundColor Green
 }
@@ -94,7 +117,8 @@ function Show-SystemInfo {
     try {
         irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Get-info.ps1 | iex
         Write-Host "[OK] Da chay thanh cong va xuat file ra Desktop!" -ForegroundColor Green
-    } catch {
+    }
+    catch {
         Write-Host "[LOI] Khong the tai script Get-info.ps1 tu GitHub: $_" -ForegroundColor Red
     }
 }
@@ -112,7 +136,7 @@ function Draw-Menu {
     
     Clear-Host
     Write-Host "==========================================================" -ForegroundColor Cyan
-    Write-Host "                    MINIAZ SETUP TOOLS                    " -ForegroundColor White -BackgroundColor DarkBlue
+    Write-Host "                        MINI-APPS                         " -ForegroundColor White -BackgroundColor DarkBlue
     Write-Host "==========================================================" -ForegroundColor Cyan
     Write-Host ""
 
@@ -126,7 +150,8 @@ function Draw-Menu {
     for ($i = 0; $i -lt $options.Count; $i++) {
         if ($i -eq $selectedIndex) {
             Write-Host "  > $($options[$i]) " -ForegroundColor Black -BackgroundColor Cyan
-        } else {
+        }
+        else {
             Write-Host "    $($options[$i]) " -ForegroundColor White
         }
     }
