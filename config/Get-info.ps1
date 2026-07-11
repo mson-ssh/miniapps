@@ -17,7 +17,7 @@ $DesktopPath = [Environment]::GetFolderPath("Desktop")
 $LogFile     = "$DesktopPath\info.txt"
 
 # ----------------------------- SILENT MODE --------------------------------------
-if (-not $Silent) {
+if (-not $Silent -and $PSCommandPath) {
     $argList = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`" -Silent"
     Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WindowStyle Hidden -Wait
     exit $LASTEXITCODE
@@ -98,5 +98,4 @@ $report | Out-File -FilePath $LogFile -Encoding UTF8 -Force
 # ----------------------------- SAFE OPEN IN SILENT MODE -------------------------
 # Launch Notepad decoupled from the current process tree so SFX can finish immediately
 Start-Process -FilePath "notepad.exe" -ArgumentList "`"$LogFile`"" -WindowStyle Normal
-
-exit 0
+
