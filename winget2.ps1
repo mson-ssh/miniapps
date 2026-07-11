@@ -59,31 +59,49 @@ function Install-NecessaryApps {
     Write-Host "`n[Bat dau] Tai va cai dat song song $($parallelApps.Count) phan mem chinh..." -ForegroundColor Cyan
     $jobs = @()
     foreach ($app in $parallelApps) {
-        Write-Host "-> Dang kich hoat luong tai ngam cho: $($app.Name)" -ForegroundColor Yellow
         $job = Start-Job -ScriptBlock {
             param($Name, $Url, $WingetId, $ArgsStr)
             $tempDir = "$env:TEMP\MiniAZ_Apps"
             if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
             $tempExe = "$tempDir\$Name.exe"
             
+            Write-Output "[+] Dang tai $Name..."
             $success = $false
             try {
                 Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -ErrorAction Stop
+                Write-Output "[*] Dang cai dat $Name..."
                 $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -Wait -PassThru -NoNewWindow
-                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { $success = $true }
-            } catch { }
+                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
+                    $success = $true 
+                    Write-Output "[V] Da cai xong $Name!"
+                } else {
+                    Write-Output "[X] Loi cai dat $Name (Exit Code: $($proc.ExitCode))"
+                }
+            } catch { 
+                Write-Output "[X] Loi tai/cai dat $Name..."
+            }
 
             if (-not $success -and $WingetId) {
-                # Fallback sang Winget
-                Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -NoNewWindow | Out-Null
+                Write-Output "[!] Dang chuyen sang cai $Name qua Winget..."
+                $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -PassThru -NoNewWindow
+                if ($proc.ExitCode -eq 0) { Write-Output "[V] Da cai xong $Name (Winget)!" }
             }
         } -ArgumentList $app.Name, $app.Url, $app.WingetId, $app.Args
         $jobs += $job
     }
 
-    # 4. Doi cac tien trinh chay ngam hoan tat
-    Write-Host "`n[Tien Trinh] Dang doi cac ung dung cai song song va thiet lap he thong hoan tat..." -ForegroundColor Cyan
-    Wait-Job $jobs | Out-Null
+    # 4. Hien thi truc quan tien trinh chay ngam
+    Write-Host "`n[Tien Trinh] Dang xu ly cac ung dung song song..." -ForegroundColor Cyan
+    while ($jobs.State -contains 'Running') {
+        foreach ($job in $jobs) {
+            if ($job.HasMoreData) {
+                Receive-Job -Job $job | ForEach-Object { Write-Host "   $_" -ForegroundColor Yellow }
+            }
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    # Nhan not du lieu cuoi cung (neu co)
+    Receive-Job -Job $jobs | ForEach-Object { Write-Host "   $_" -ForegroundColor Yellow }
     Remove-Job $jobs | Out-Null
     Wait-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
