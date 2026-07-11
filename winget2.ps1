@@ -33,9 +33,11 @@ function Install-NecessaryApps {
             Add-AppxPackage -Path "$tempDir\UiXaml.appx" -ErrorAction SilentlyContinue
             Add-AppxPackage -Path "$tempDir\Winget.msixbundle" -ErrorAction SilentlyContinue
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            & winget settings --enable BypassCertificatePinningForMicrosoftStore --accept-source-agreements | Out-Null
             & winget source update --quiet | Out-Null
         } catch { }
     } else {
+        & winget settings --enable BypassCertificatePinningForMicrosoftStore --accept-source-agreements | Out-Null
         & winget source update --quiet | Out-Null
     }
 
