@@ -12,11 +12,11 @@ Dự án này chứa các script PowerShell giúp tự động hóa quá trình 
 Bạn không cần phải tải file về máy. Chỉ cần mở **Windows PowerShell** với quyền Quản trị viên (Run as Administrator) và chạy câu lệnh dưới đây:
 
 ```powershell
-irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/winget2.ps1 | iex
+irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1 | iex
 ```
 
 ### Các Script hiện có:
-- `winget2.ps1`: Kịch bản hoàn chỉnh, tích hợp thêm phần cài đặt tự động danh sách các phần mềm thiết yếu và thư viện cho máy tính.
+- `Setup.ps1`: Kịch bản hoàn chỉnh, tích hợp thêm phần cài đặt tự động danh sách các phần mềm thiết yếu và thư viện cho máy tính.
 
 ---
 *Lưu ý: Quá trình cài đặt có thể mất một vài phút tùy thuộc vào tốc độ mạng của bạn.*

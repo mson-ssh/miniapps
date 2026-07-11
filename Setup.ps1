@@ -14,7 +14,7 @@ if (-not $isAdmin) {
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     } else {
         $tempScript = "$env:TEMP\winget2_elevated.ps1"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mson-ssh/miniapps/main/winget2.ps1" -OutFile $tempScript -UseBasicParsing
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1" -OutFile $tempScript -UseBasicParsing
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
     }
     exit
