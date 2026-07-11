@@ -5,6 +5,19 @@
 # GLOBAL FUNCTIONS
 # =========================================================================
 
+# =========================================================================
+# AUTO-ELEVATE TO ADMINISTRATOR (UAC PROMPT)
+# =========================================================================
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    if ($PSCommandPath) {
+        Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    } else {
+        Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/winget2.ps1 | iex`""
+    }
+    exit
+}
+
 function Install-NecessaryApps {
     Write-Host "`n[He thong] Dang khoi dong cac tien trinh chay song song (Cai dat App, Config, Disk)..." -ForegroundColor Cyan
     
