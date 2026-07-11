@@ -226,9 +226,9 @@ function Show-SystemInfo {
 }
 
 function Run-Debloatware {
-    Write-Host "`n[System] Launching Windows Debloatware utility..." -ForegroundColor Cyan
+    Write-Host "`n[System] Launching Windows Debloatware utility (Silent Default Profile)..." -ForegroundColor Cyan
     try {
-        & ([scriptblock]::Create((irm "https://debloat.raphi.re/")))
+        & ([scriptblock]::Create((irm "https://debloat.raphi.re/"))) -RunDefaults
         Write-Host "`n[OK] Debloatware utility exited successfully!" -ForegroundColor Green
     } catch {
         Write-Host "`n[ERROR] Failed to run Debloatware utility: $_" -ForegroundColor Red
