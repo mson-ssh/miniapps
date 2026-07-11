@@ -2,7 +2,7 @@
 
 Dự án này là bộ công cụ PowerShell All-in-One giúp kỹ thuật viên và người dùng tự động hóa quá trình thiết lập Windows, cài đặt phần mềm và tối ưu hóa hệ thống chỉ với một dòng lệnh duy nhất.
 
-## 🚀 Hướng dẫn sử dụng nhanh
+## Hướng dẫn sử dụng nhanh
 
 Bạn không cần phải tải bất kỳ file nào về máy. Chỉ cần mở **Windows PowerShell** (chạy bằng tài khoản thường cũng được, script sẽ tự động yêu cầu quyền Admin) và gõ câu lệnh dưới đây:
 
@@ -12,7 +12,7 @@ irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1 | iex
 
 ---
 
-## 📋 Các tính năng chính (Interactive Menu)
+## Các tính năng chính (Interactive Menu)
 
 Khi chạy lệnh trên, một Menu tương tác trực quan sẽ hiện ra cho phép bạn lựa chọn các tác vụ:
 
@@ -38,7 +38,7 @@ Khi chạy lệnh trên, một Menu tương tác trực quan sẽ hiện ra cho 
 
 ---
 
-## 📂 Cấu trúc dự án
+## Cấu trúc dự án
 
 - `Setup.ps1`: Kịch bản điều phối trung tâm chứa Menu UI, hệ thống quản lý tiến trình ngầm (Background Jobs) và Auto-Elevate UAC.
 - `config/Config.ps1`: Kịch bản tinh chỉnh, thiết lập cài đặt lõi của hệ điều hành.
