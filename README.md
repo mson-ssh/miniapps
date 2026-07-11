@@ -4,7 +4,7 @@ Dự án này chứa các script PowerShell giúp tự động hóa quá trình 
 
 ## Tính năng chính
 - Tự động kiểm tra và cài đặt Winget nếu hệ thống chưa có.
-- Cài đặt âm thầm (Silent mode) danh sách các phần mềm thông dụng: Google Chrome, WinRAR, Zalo, Telegram, UniKey, K-Lite Codec Pack, UltraViewer, Zoom và các gói Visual C++ Redistributable (2012-2022).
+- Cài đặt âm thầm (Silent mode) danh sách các phần mềm thông dụng: Google Chrome, WinRAR, Zalo, Telegram, K-Lite Codec Pack, UltraViewer, Zoom và các gói Visual C++ Redistributable (2012-2022).
 - Chạy ngầm hoàn toàn, không yêu cầu người dùng tương tác trong quá trình cài đặt.
 
 ## Hướng dẫn sử dụng nhanh (Run via PowerShell)
