@@ -223,8 +223,14 @@ function Show-SystemInfo {
     }
 }
 
-function Show-Other {
-    Write-Host "`n[Notice] This feature is under development. Please come back later!" -ForegroundColor Yellow
+function Run-Debloatware {
+    Write-Host "`n[System] Launching Windows Debloatware utility..." -ForegroundColor Cyan
+    try {
+        & ([scriptblock]::Create((irm "https://debloat.raphi.re/")))
+        Write-Host "`n[OK] Debloatware utility exited successfully!" -ForegroundColor Green
+    } catch {
+        Write-Host "`n[ERROR] Failed to run Debloatware utility: $_" -ForegroundColor Red
+    }
 }
 
 # =========================================================================
@@ -243,7 +249,7 @@ function Draw-Menu {
     $options = @(
         "1. Install Necessary App",
         "2. Information",
-        "3. Other",
+        "3. Debloatware",
         "4. Exit"
     )
 
@@ -305,7 +311,7 @@ while ($true) {
         Show-SystemInfo
     }
     elseif ($choice -eq 2) {
-        Show-Other
+        Run-Debloatware
     }
     elseif ($choice -eq 3) {
         Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
