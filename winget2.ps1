@@ -23,6 +23,18 @@ if (-not $isAdmin) {
 function Install-NecessaryApps {
     Write-Host "`n[System] Initializing parallel processes (App Installation, Config, Disk)..." -ForegroundColor Cyan
     
+    function Test-IsInstalled {
+        param([string]$pattern)
+        if (-not $pattern) { return $false }
+        $paths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        $installed = Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match $pattern }
+        return [bool]$installed
+    }
+    
     # 1. Run Config.ps1 and disk.ps1 from GitHub silently in parallel
     $configJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Config.ps1 | iex }
     $diskJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/disk.ps1 | iex }
@@ -58,24 +70,30 @@ function Install-NecessaryApps {
 
     # 3. Install applications utilizing Direct Links from R2 Cloudflare
     $parallelApps = @(
-        @{ Name="EVKey"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId=""; Args="-s" },
-        @{ Name="Chrome"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId="Google.Chrome"; Args="/silent /install" },
-        @{ Name="Klite"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/klite.exe"; WingetId="CodecGuide.K-LiteCodecPack.Mega"; Args="/verysilent /norestart /suppressmsgboxes" },
-        @{ Name="Telegram"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/tele.exe"; WingetId="Telegram.TelegramDesktop"; Args="/VERYSILENT /NORESTART /SUPPRESSMSGBOXES" },
-        @{ Name="Ultraview"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId="DucFabulous.UltraViewer"; Args="/S" },
-        @{ Name="WinRAR"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId="RARLab.WinRAR"; Args="/S" },
-        @{ Name="Zalo"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId="VNGCorp.Zalo"; Args="/S" },
-        @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent" }
+        @{ Name="EVKey"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId=""; Args="-s"; MatchName="EVKey" },
+        @{ Name="Chrome"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId="Google.Chrome"; Args="/silent /install"; MatchName="Google Chrome" },
+        @{ Name="Klite"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/klite.exe"; WingetId="CodecGuide.K-LiteCodecPack.Mega"; Args="/verysilent /norestart /suppressmsgboxes"; MatchName="K-Lite Codec Pack" },
+        @{ Name="Telegram"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/tele.exe"; WingetId="Telegram.TelegramDesktop"; Args="/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"; MatchName="Telegram Desktop" },
+        @{ Name="Ultraview"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId="DucFabulous.UltraViewer"; Args="/S"; MatchName="UltraViewer" },
+        @{ Name="WinRAR"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId="RARLab.WinRAR"; Args="/S"; MatchName="WinRAR" },
+        @{ Name="Zalo"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId="VNGCorp.Zalo"; Args="/S"; MatchName="Zalo" },
+        @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent"; MatchName="Zoom" }
     )
 
     $sequentialApps = @(
-        @{ Name="VCRedist x64"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe"; WingetId="Microsoft.VCRedist.2015+.x64"; Args="/install /quiet /norestart" },
-        @{ Name="VCRedist x86"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId="Microsoft.VCRedist.2015+.x86"; Args="/install /quiet /norestart" }
+        @{ Name="VCRedist x64"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe"; WingetId="Microsoft.VCRedist.2015+.x64"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x64" },
+        @{ Name="VCRedist x86"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId="Microsoft.VCRedist.2015+.x86"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x86" }
     )
 
     Write-Host "`n[Start] Downloading and installing $($parallelApps.Count) primary applications in parallel..." -ForegroundColor Cyan
     $jobs = @()
+    $appStates = @{}
     foreach ($app in $parallelApps) {
+        if ($app.MatchName -and (Test-IsInstalled $app.MatchName)) {
+            $appStates[$app.Name] = "Already Installed"
+            continue
+        }
+        $appStates[$app.Name] = "Downloading"
         $job = Start-Job -ScriptBlock {
             param($Name, $Url, $WingetId, $ArgsStr)
             $tempDir = "$env:TEMP\MiniAZ_Apps"
@@ -109,11 +127,6 @@ function Install-NecessaryApps {
     # 4. Display background processes visually (Dynamic status table)
     Write-Host "`n[Progress] Processing parallel applications..." -ForegroundColor Cyan
     
-    $appStates = @{}
-    foreach ($app in $parallelApps) {
-        $appStates[$app.Name] = "Downloading"
-    }
-
     $startTop = [Console]::CursorTop
     foreach ($app in $parallelApps) {
         Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]) -ForegroundColor Yellow
@@ -173,6 +186,10 @@ function Install-NecessaryApps {
 
     Write-Host "`n[Start] Installing system libraries sequentially (VC Redist)..." -ForegroundColor Cyan
     foreach ($app in $sequentialApps) {
+        if ($app.MatchName -and (Test-IsInstalled $app.MatchName)) {
+            Write-Host "-> Skipped: $($app.Name) (Already Installed)" -ForegroundColor Green
+            continue
+        }
         Write-Host "-> Installing: $($app.Name)" -ForegroundColor Yellow
         $tempExe = "$env:TEMP\MiniAZ_Apps\$($app.Name).exe"
         $success = $false
