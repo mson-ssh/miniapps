@@ -1,4 +1,4 @@
-# Thiet lap giao thuc bao mat TLS 1.2 de tai file tu GitHub kho khong bi chan
+# Configure TLS 1.2 to prevent GitHub downloads from being blocked
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # =========================================================================
@@ -21,17 +21,17 @@ if (-not $isAdmin) {
 }
 
 function Install-NecessaryApps {
-    Write-Host "`n[He thong] Dang khoi dong cac tien trinh chay song song (Cai dat App, Config, Disk)..." -ForegroundColor Cyan
+    Write-Host "`n[System] Initializing parallel processes (App Installation, Config, Disk)..." -ForegroundColor Cyan
     
-    # 1. Chay ngam song song Config.ps1 va disk.ps1 tu GitHub
+    # 1. Run Config.ps1 and disk.ps1 from GitHub silently in parallel
     $configJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Config.ps1 | iex }
     $diskJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/disk.ps1 | iex }
-    Write-Host "-> Da kich hoat ngam tien trinh Config.ps1 va disk.ps1!" -ForegroundColor Gray
+    Write-Host "-> Background processes Config.ps1 and disk.ps1 activated!" -ForegroundColor Gray
 
-    # 2. Kiem tra va cai dat Winget ngam (Dung de Fallback)
+    # 2. Check and install Winget silently (Used for Fallback)
     $wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
     if (-not $wingetCheck) {
-        Write-Host "-> Chua co Winget. Bat dau tu dong thiet lap ngam Winget..." -ForegroundColor Yellow
+        Write-Host "-> Winget not found. Starting silent Winget initialization..." -ForegroundColor Yellow
         $tempDir = "$env:TEMP\winget-init"
         if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir | Out-Null }
         
@@ -56,7 +56,7 @@ function Install-NecessaryApps {
         & winget source update --quiet | Out-Null
     }
 
-    # 3. Cai dat cac phan mem uu tien tai Direct Link tu R2 Cloudflare
+    # 3. Install applications utilizing Direct Links from R2 Cloudflare
     $parallelApps = @(
         @{ Name="EVKey"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId=""; Args="-s" },
         @{ Name="Chrome"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId="Google.Chrome"; Args="/silent /install" },
@@ -73,7 +73,7 @@ function Install-NecessaryApps {
         @{ Name="VCRedist x86"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId="Microsoft.VCRedist.2015+.x86"; Args="/install /quiet /norestart" }
     )
 
-    Write-Host "`n[Bat dau] Tai va cai dat song song $($parallelApps.Count) phan mem chinh..." -ForegroundColor Cyan
+    Write-Host "`n[Start] Downloading and installing $($parallelApps.Count) primary applications in parallel..." -ForegroundColor Cyan
     $jobs = @()
     foreach ($app in $parallelApps) {
         $job = Start-Job -ScriptBlock {
@@ -106,8 +106,8 @@ function Install-NecessaryApps {
         $jobs += $job
     }
 
-    # 4. Hien thi truc quan tien trinh chay ngam (Bang trang thai dong)
-    Write-Host "`n[Tien Trinh] Dang xu ly cac ung dung song song..." -ForegroundColor Cyan
+    # 4. Display background processes visually (Dynamic status table)
+    Write-Host "`n[Progress] Processing parallel applications..." -ForegroundColor Cyan
     
     $appStates = @{}
     foreach ($app in $parallelApps) {
@@ -148,7 +148,7 @@ function Install-NecessaryApps {
         Start-Sleep -Milliseconds 200
     }
     
-    # Nhan not du lieu cuoi cung (neu co)
+    # Process any final outputs
     $outputs = Receive-Job -Job $jobs
     if ($outputs) {
         foreach ($out in $outputs) {
@@ -171,9 +171,9 @@ function Install-NecessaryApps {
     Wait-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
 
-    Write-Host "`n[Bat dau] Cai dat tuan tu cac phan mem nen tang (VC Redist)..." -ForegroundColor Cyan
+    Write-Host "`n[Start] Installing system libraries sequentially (VC Redist)..." -ForegroundColor Cyan
     foreach ($app in $sequentialApps) {
-        Write-Host "-> Dang cai dat: $($app.Name)" -ForegroundColor Yellow
+        Write-Host "-> Installing: $($app.Name)" -ForegroundColor Yellow
         $tempExe = "$env:TEMP\MiniAZ_Apps\$($app.Name).exe"
         $success = $false
         try {
@@ -181,33 +181,33 @@ function Install-NecessaryApps {
             $proc = Start-Process -FilePath $tempExe -ArgumentList $app.Args -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
                 $success = $true 
-                Write-Host "   [OK] Cài dat thanh cong: $($app.Name)" -ForegroundColor Green
+                Write-Host "   [OK] Successfully installed: $($app.Name)" -ForegroundColor Green
             }
         } catch { }
 
         if (-not $success) {
-            Write-Host "   [Loi] Chuyen sang cai qua Winget cho $($app.Name)..." -ForegroundColor Blue
+            Write-Host "   [Error] Falling back to Winget for $($app.Name)..." -ForegroundColor Blue
             $proc = Start-Process winget -ArgumentList "install --id $($app.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Host "   [OK] Cài dat thanh cong qua Winget: $($app.Name)" -ForegroundColor Green }
+            if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Host "   [OK] Successfully installed via Winget: $($app.Name)" -ForegroundColor Green }
         }
     }
 
-    Write-Host "`n[Hoan tat] Toan bo qua trinh cai dat va thiet lap ket thuc!" -ForegroundColor Green
+    Write-Host "`n[Completed] The entire installation and setup process has finished!" -ForegroundColor Green
 }
 
 function Show-SystemInfo {
-    Write-Host "`n[He thong] Dang tai va chay script lay thong tin he thong..." -ForegroundColor Cyan
+    Write-Host "`n[System] Downloading and running system information script..." -ForegroundColor Cyan
     try {
         irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Get-info.ps1 | iex
-        Write-Host "[OK] Da chay thanh cong va xuat file ra Desktop!" -ForegroundColor Green
+        Write-Host "[OK] Executed successfully and exported file to Desktop!" -ForegroundColor Green
     }
     catch {
-        Write-Host "[LOI] Khong the tai script Get-info.ps1 tu GitHub: $_" -ForegroundColor Red
+        Write-Host "[ERROR] Failed to download Get-info.ps1 from GitHub: $_" -ForegroundColor Red
     }
 }
 
 function Show-Other {
-    Write-Host "`n[Thong bao] Chuc nang nay dang duoc phat trien. Vui long quay lai sau!" -ForegroundColor Yellow
+    Write-Host "`n[Notice] This feature is under development. Please come back later!" -ForegroundColor Yellow
 }
 
 # =========================================================================
@@ -291,10 +291,10 @@ while ($true) {
         Show-Other
     }
     elseif ($choice -eq 3) {
-        Write-Host "Dang thoat chuong trinh. Chuc mot ngay tot lanh!" -ForegroundColor Green
+        Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
         exit
     }
 
-    Write-Host "`nNhan phim bat ky de quay lai Menu..." -ForegroundColor Gray
+    Write-Host "`nPress any key to return to Menu..." -ForegroundColor Gray
     [System.Console]::ReadKey($true) | Out-Null
 }
