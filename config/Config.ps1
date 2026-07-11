@@ -13,9 +13,9 @@ param(
 )
 
 # ----------------------------- CONFIGURATION ------------------------------------
-$PrimaryDNS   = "1.1.1.1"
+$PrimaryDNS = "1.1.1.1"
 $SecondaryDNS = "8.8.8.8"
-$TimezoneID   = "SE Asia Standard Time"
+$TimezoneID = "SE Asia Standard Time"
 
 # ----------------------------- SILENT MODE --------------------------------------
 # If the script is run without the -Silent switch, relaunch it in hidden mode.
@@ -50,7 +50,8 @@ if (-not $isAdmin) {
 try {
     Set-SmbClientConfiguration -RequireSecuritySignature $false -Force -ErrorAction Stop
     $status.SMB = $true
-} catch {
+}
+catch {
 }
 
 # ----------------------------- 2. DESKTOP ICONS ----------------------------------
@@ -84,17 +85,20 @@ try {
     [Win32UI]::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero)
 
     $status.DesktopIcons = $true
-} catch {
+}
+catch {
 }
 
 # ----------------------------- 3. PASSWORD POLICY --------------------------------
 try {
     net accounts /maxpwage:unlimited | Out-Null
     if ($LASTEXITCODE -eq 0) {
-    } else {
+    }
+    else {
         throw "net accounts command returned exit code $LASTEXITCODE"
     }
-} catch {
+}
+catch {
 }
 
 # ----------------------------- 4. POWER MANAGEMENT -------------------------------
@@ -105,7 +109,8 @@ try {
     powercfg /change standby-timeout-dc 0 | Out-Null
     
     $status.Power = $true
-} catch {
+}
+catch {
 }
 
 # Disable Fast Startup
@@ -113,40 +118,48 @@ try {
     $powerRegPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power"
     New-ItemProperty -Path $powerRegPath -Name "HiberbootEnabled" -Value 0 -PropertyType DWord -Force | Out-Null
     $status.FastStartup = $true
-} catch {
+}
+catch {
 }
 
 # ----------------------------- 5. DNS CONFIGURATION ------------------------------
 try {
     $adapters = Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' }
-    if ($adapters) {
+    if (-not $adapters) {
+    }
+    else {
         $dnsSuccessCount = 0
         foreach ($adapter in $adapters) {
             try {
                 Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses @($PrimaryDNS, $SecondaryDNS) -ErrorAction Stop
                 $dnsSuccessCount++
-            } catch {
+            }
+            catch {
             }
         }
         if ($dnsSuccessCount -gt 0) {
             $status.DNS = $true
         }
     }
-} catch {
+}
+catch {
 }
 
 # ----------------------------- 6. DNS VERIFICATION -------------------------------
 try {
     $verifyDns = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses -contains $PrimaryDNS }
-
-} catch {
+    foreach ($v in $verifyDns) {
+    }
+}
+catch {
 }
 
 # ----------------------------- 7. TIMEZONE ---------------------------------------
 try {
     Set-TimeZone -Id $TimezoneID -ErrorAction Stop
     $status.Timezone = $true
-} catch {
+}
+catch {
 }
 
 # ================================================================================
