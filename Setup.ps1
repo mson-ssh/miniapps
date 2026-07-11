@@ -77,7 +77,8 @@ function Install-NecessaryApps {
         @{ Name="Ultraview"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId="DucFabulous.UltraViewer"; Args="/S"; MatchName="UltraViewer" },
         @{ Name="WinRAR"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId="RARLab.WinRAR"; Args="/S"; MatchName="WinRAR" },
         @{ Name="Zalo"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId="VNGCorp.Zalo"; Args="/S"; MatchName="Zalo" },
-        @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent"; MatchName="Zoom" }
+        @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent"; MatchName="Zoom" },
+        @{ Name="Office 2024"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe"; WingetId=""; Args=""; MatchName="Microsoft Office|Microsoft 365" }
     )
 
     $sequentialApps = @(
