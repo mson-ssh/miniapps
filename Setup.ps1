@@ -79,10 +79,7 @@ function Install-NecessaryApps {
         @{ Name="WinRAR"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId="RARLab.WinRAR"; Args="/S"; MatchName="WinRAR" },
         @{ Name="Zalo"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId="VNGCorp.Zalo"; Args="/S"; MatchName="Zalo" },
         @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent"; MatchName="Zoom" },
-        @{ Name="Office 2024"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe"; WingetId=""; Args=""; MatchName="Microsoft Office|Microsoft 365" }
-    )
-
-    $sequentialApps = @(
+        @{ Name="Office 2024"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe"; WingetId=""; Args=""; MatchName="Microsoft Office|Microsoft 365" },
         @{ Name="VCRedist x64"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe"; WingetId="Microsoft.VCRedist.2015+.x64"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x64" },
         @{ Name="VCRedist x86"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId="Microsoft.VCRedist.2015+.x86"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x86" }
     )
@@ -123,6 +120,10 @@ function Install-NecessaryApps {
                 } else {
                     Write-Output "STATE:$Name:Installing"
                     
+                    if ($Name -match "VCRedist") {
+                        while (Get-Process msiexec -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }
+                    }
+
                     $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
                     
                     try {
@@ -233,52 +234,6 @@ function Install-NecessaryApps {
     }
     Wait-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
-
-    Write-Host "`n[Start] Installing system libraries sequentially (VC Redist)..." -ForegroundColor Cyan
-    foreach ($app in $sequentialApps) {
-        if ($app.MatchName -and (Test-IsInstalled $app.MatchName)) {
-            Write-Host "-> Skipped: $($app.Name) (Already Installed)" -ForegroundColor Green
-            continue
-        }
-        Write-Host "-> Installing: $($app.Name)" -ForegroundColor Yellow
-        $tempExe = "$env:TEMP\MiniAZ_Apps\$($app.Name).exe"
-        $success = $false
-        try {
-            $maxRetries = 3; $retry = 0; $downloaded = $false
-            while ($retry -lt $maxRetries -and -not $downloaded) {
-                try {
-                    Invoke-WebRequest -Uri $app.Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
-                    $downloaded = $true
-                } catch {
-                    $retry++
-                    if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
-                }
-            }
-            if (-not $downloaded) { throw "Download failed" }
-
-            $proc = Start-Process -FilePath $tempExe -ArgumentList $app.Args -PassThru -NoNewWindow
-            try {
-                $proc | Wait-Process -Timeout 180 -ErrorAction Stop
-                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
-                    $success = $true 
-                    Write-Host "   [OK] Successfully installed: $($app.Name)" -ForegroundColor Green
-                }
-            } catch {
-                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-            }
-        } catch { }
-
-        if (-not $success) {
-            Write-Host "   [Error] Falling back to Winget for $($app.Name)..." -ForegroundColor Blue
-            $proc = Start-Process winget -ArgumentList "install --id $($app.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
-            try {
-                $proc | Wait-Process -Timeout 180 -ErrorAction Stop
-                if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Host "   [OK] Successfully installed via Winget: $($app.Name)" -ForegroundColor Green }
-            } catch {
-                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-            }
-        }
-    }
 
     Write-Host "`n[Completed] The entire installation and setup process has finished!" -ForegroundColor Green
 }
