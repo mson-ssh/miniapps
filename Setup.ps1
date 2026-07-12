@@ -18,14 +18,15 @@ if (-not $isAdmin) {
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     }
     else {
-        $tempScript = "$env:TEMP\winget2_elevated.ps1"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mson-ssh/miniapps/main/winget2.ps1" -OutFile $tempScript -UseBasicParsing
+        $tempScript = "$env:TEMP\Setup_elevated.ps1"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1" -OutFile $tempScript -UseBasicParsing
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
     }
     exit
 }
 
 function Install-NecessaryApps {
+    param([string]$Method = 'Installer')
     Write-Host "`n[System] Initializing parallel processes (App Installation, Config, Disk)..." -ForegroundColor Cyan
     
     function Test-IsInstalled {
@@ -104,72 +105,71 @@ function Install-NecessaryApps {
         }
         $appStates[$app.Name] = "Downloading"
         $job = Start-Job -ScriptBlock {
-            param($Name, $Url, $WingetId, $ArgsStr)
+            param($Name, $Url, $WingetId, $ArgsStr, $Method)
             $ProgressPreference = 'SilentlyContinue'
             $tempDir = "$env:TEMP\MiniAZ_Apps"
             if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
             $tempExe = "$tempDir\$Name.exe"
             
             $success = $false
-            try {
-                $maxRetries = 3; $retry = 0; $downloaded = $false
-                Write-Output "STATE:$Name:Downloading"
-                while ($retry -lt $maxRetries -and -not $downloaded) {
-                    try {
-                        Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
-                        $downloaded = $true
-                    }
-                    catch {
-                        $retry++
-                        if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
-                    }
+            if ($Method -eq 'Winget' -and $WingetId) {
+                Write-Output "STATE:$Name:Installing"
+                $proc = Start-Process -FilePath "winget" -ArgumentList "install --id $WingetId --exact --silent --accept-package-agreements --accept-source-agreements" -PassThru
+                try {
+                    $proc | Wait-Process -Timeout 300 -ErrorAction Stop
+                    if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0) { $success = $true; Write-Output "STATE:$Name:Done" }
+                } catch {
+                    $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                 }
-                if (-not $downloaded) { throw "Download failed" }
-
-                if ($Name -eq "Office 2024") {
-                    Write-Output "STATE:$Name:ReadyToInstall:$tempExe"
-                    $success = $true
-                }
-                else {
-                    Write-Output "STATE:$Name:Installing"
-                    
-                    $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
-                    
-                    try {
-                        $timeout = 180
-                        if ($Name -eq "EVKey") { $timeout = 15 }
-                        $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
-                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
-                            $success = $true 
-                            Write-Output "STATE:$Name:Done"
+            } else {
+                try {
+                    $maxRetries = 3; $retry = 0; $downloaded = $false
+                    Write-Output "STATE:$Name:Downloading"
+                    while ($retry -lt $maxRetries -and -not $downloaded) {
+                        try {
+                            Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                            $downloaded = $true
                         }
-                        else {
+                        catch {
+                            $retry++
+                            if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
+                        }
+                    }
+                    if (-not $downloaded) { throw "Download failed" }
+
+                    if ($Name -eq "Office 2024") {
+                        Write-Output "STATE:$Name:ReadyToInstall:$tempExe"
+                        $success = $true
+                    }
+                    else {
+                        Write-Output "STATE:$Name:Installing"
+                        
+                        $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                        
+                        try {
+                            $timeout = 180
+                            if ($Name -eq "EVKey") { $timeout = 15 }
+                            $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
+                            if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
+                                $success = $true 
+                                Write-Output "STATE:$Name:Done"
+                            }
+                            else {
+                                Write-Output "STATE:$Name:Error"
+                            }
+                        }
+                        catch {
+                            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                             Write-Output "STATE:$Name:Error"
                         }
                     }
-                    catch {
-                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-                        Write-Output "STATE:$Name:Error"
-                    }
                 }
-            }
-            catch { 
-                Write-Output "STATE:$Name:Error"
-            }
-
-            if (-not $success -and $WingetId) {
-                Write-Output "STATE:$Name:Winget"
-                $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
-                try {
-                    $proc | Wait-Process -Timeout 180 -ErrorAction Stop
-                    if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
-                }
-                catch {
-                    $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                catch { 
                     Write-Output "STATE:$Name:Error"
                 }
             }
-        } -ArgumentList $app.Name, $app.Url, $app.WingetId, $app.Args
+            if (-not $success) { Write-Output "STATE:$Name:Error" }
+        } -ArgumentList $app.Name, $app.Url, $app.WingetId, $app.Args, $Method
         $jobs += $job
     }
 
@@ -185,61 +185,52 @@ function Install-NecessaryApps {
     
     if ($sequentialAppsToRun.Count -gt 0) {
         $seqJob = Start-Job -ScriptBlock {
-            param($Apps)
+            param($Apps, $Method)
             $ProgressPreference = 'SilentlyContinue'
             foreach ($app in $Apps) {
                 $Name = $app.Name; $Url = $app.Url; $WingetId = $app.WingetId; $ArgsStr = $app.Args
                 $tempExe = "$env:TEMP\MiniAZ_Apps\$Name.exe"
+                
                 $success = $false
-                try {
-                    $maxRetries = 3; $retry = 0; $downloaded = $false
-                    Write-Output "STATE:$Name:Downloading"
-                    while ($retry -lt $maxRetries -and -not $downloaded) {
-                        try {
-                            Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
-                            $downloaded = $true
-                        } catch {
-                            $retry++
-                            if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
-                        }
-                    }
-                    if (-not $downloaded) { throw "Download failed" }
-
+                if ($Method -eq 'Winget' -and $WingetId) {
                     Write-Output "STATE:$Name:Installing"
-                    if ($Name -match "VCRedist") {
-                        $msiWait = 0
-                        while ((Get-Process msiexec -ErrorAction SilentlyContinue) -and $msiWait -lt 60) { Start-Sleep -Seconds 2; $msiWait += 2 }
-                    }
-                    $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                    $proc = Start-Process -FilePath "winget" -ArgumentList "install --id $WingetId --exact --silent --accept-package-agreements --accept-source-agreements" -PassThru
                     try {
-                        $proc | Wait-Process -Timeout 180 -ErrorAction Stop
-                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
-                            $success = $true 
-                            Write-Output "STATE:$Name:Done"
-                        } else {
-                            Write-Output "STATE:$Name:Error"
+                        $proc | Wait-Process -Timeout 300 -ErrorAction Stop
+                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0) { $success = $true; Write-Output "STATE:$Name:Done" }
+                    } catch {
+                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                    }
+                } else {
+                    try {
+                        $maxRetries = 3; $retry = 0; $downloaded = $false
+                        Write-Output "STATE:$Name:Downloading"
+                        while ($retry -lt $maxRetries -and -not $downloaded) {
+                            try {
+                                Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                                $downloaded = $true
+                            } catch {
+                                $retry++
+                                if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
+                            }
                         }
-                    } catch {
-                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-                        Write-Output "STATE:$Name:Error"
-                    }
-                } catch { 
-                    Write-Output "STATE:$Name:Error"
-                }
+                        if (-not $downloaded) { throw "Download failed" }
 
-                if (-not $success -and $WingetId) {
-                    Write-Output "STATE:$Name:Winget"
-                    $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
-                    try {
-                        $proc | Wait-Process -Timeout 180 -ErrorAction Stop
-                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
-                    } catch {
-                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                        Write-Output "STATE:$Name:Installing"
+                        $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                        try {
+                            $proc | Wait-Process -Timeout 180 -ErrorAction Stop
+                            if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { $success = $true; Write-Output "STATE:$Name:Done" }
+                        } catch {
+                            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch { 
                         Write-Output "STATE:$Name:Error"
                     }
                 }
+                if (-not $success) { Write-Output "STATE:$Name:Error" }
             }
-        } -ArgumentList (,$sequentialAppsToRun)
+        } -ArgumentList (,$sequentialAppsToRun), $Method
         $jobs += $seqJob
     }
     
@@ -327,10 +318,38 @@ function Show-SystemInfo {
     Write-Host "`n[System] Downloading and running system information script..." -ForegroundColor Cyan
     try {
         irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Get-info.ps1 | iex
-        Write-Host "[OK] Executed successfully and exported file to Desktop!" -ForegroundColor Green
+        
+        # Create Office shortcuts if they exist
+        $officePaths = @(
+            "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+            "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+            "C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
+            "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
+            "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
+            "C:\Program Files (x86)\Microsoft Office\root\Office16\POWERPNT.EXE"
+        )
+        $wshShell = New-Object -ComObject WScript.Shell
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        foreach ($path in $officePaths) {
+            if (Test-Path $path) {
+                $name = (Get-Item $path).BaseName
+                if ($name -eq "WINWORD") { $name = "Word" }
+                elseif ($name -eq "EXCEL") { $name = "Excel" }
+                elseif ($name -eq "POWERPNT") { $name = "PowerPoint" }
+                
+                $shortcutPath = Join-Path $desktop "$name.lnk"
+                if (-not (Test-Path $shortcutPath)) {
+                    $shortcut = $wshShell.CreateShortcut($shortcutPath)
+                    $shortcut.TargetPath = $path
+                    $shortcut.Save()
+                }
+            }
+        }
+
+        Write-Host "[OK] Executed successfully, exported file to Desktop, and created Office shortcuts (if found)!" -ForegroundColor Green
     }
     catch {
-        Write-Host "[ERROR] Failed to download Get-info.ps1 from GitHub: $_" -ForegroundColor Red
+        Write-Host "[ERROR] Failed to run System Information tasks: $_" -ForegroundColor Red
     }
 }
 
@@ -359,10 +378,11 @@ function Draw-Menu {
     Write-Host ""
 
     $options = @(
-        "1. Install Necessary App",
-        "2. Information",
-        "3. Debloatware",
-        "4. Exit"
+        "1. Install App with Installer",
+        "2. Install App with Winget",
+        "3. Information",
+        "4. Debloatware Windows",
+        "5. Exit"
     )
 
     for ($i = 0; $i -lt $options.Count; $i++) {
@@ -378,7 +398,7 @@ function Draw-Menu {
 
 function Run-Menu {
     $selectedIndex = 0
-    $optionsCount = 4
+    $optionsCount = 5
 
     while ($true) {
         Draw-Menu -selectedIndex $selectedIndex
@@ -398,11 +418,12 @@ function Run-Menu {
         elseif ($key -eq 'D2' -or $key -eq 'NumPad2') { $selectedIndex = 1; break }
         elseif ($key -eq 'D3' -or $key -eq 'NumPad3') { $selectedIndex = 2; break }
         elseif ($key -eq 'D4' -or $key -eq 'NumPad4') { $selectedIndex = 3; break }
+        elseif ($key -eq 'D5' -or $key -eq 'NumPad5') { $selectedIndex = 4; break }
         elseif ($key -eq 'Enter') {
             break
         }
         elseif ($key -eq 'Escape') {
-            $selectedIndex = 3; break
+            $selectedIndex = 4; break
         }
     }
     return $selectedIndex
@@ -417,15 +438,18 @@ while ($true) {
     
     Clear-Host
     if ($choice -eq 0) {
-        Install-NecessaryApps
+        Install-NecessaryApps -Method 'Installer'
     }
     elseif ($choice -eq 1) {
-        Show-SystemInfo
+        Install-NecessaryApps -Method 'Winget'
     }
     elseif ($choice -eq 2) {
-        Run-Debloatware
+        Show-SystemInfo
     }
     elseif ($choice -eq 3) {
+        Run-Debloatware
+    }
+    elseif ($choice -eq 4) {
         Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
         exit
     }
