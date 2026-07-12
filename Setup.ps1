@@ -36,6 +36,7 @@ function Install-NecessaryApps {
     }
     
     # 1. Run Config.ps1 and disk.ps1 from GitHub silently in parallel
+    Write-Host "`n[System] Initiating Config and Disk Setup in background..." -ForegroundColor Magenta
     $configJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Config.ps1 | iex }
     $diskJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/disk.ps1 | iex }
     Write-Host "-> Background processes Config.ps1 and disk.ps1 activated!" -ForegroundColor Gray
@@ -70,7 +71,7 @@ function Install-NecessaryApps {
 
     # 3. Install applications utilizing Direct Links from R2 Cloudflare
     $parallelApps = @(
-        @{ Name="EVKey"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId=""; Args="-s"; MatchName="EVKey" },
+        @{ Name="EVKey"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId=""; Args="-s"; MatchName="" },
         @{ Name="Chrome"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId="Google.Chrome"; Args="/silent /install"; MatchName="Google Chrome" },
         @{ Name="Klite"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/klite.exe"; WingetId="CodecGuide.K-LiteCodecPack.Mega"; Args="/verysilent /norestart /suppressmsgboxes"; MatchName="K-Lite Codec Pack" },
         @{ Name="Telegram"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/tele.exe"; WingetId="Telegram.TelegramDesktop"; Args="/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"; MatchName="Telegram Desktop" },
@@ -115,22 +116,27 @@ function Install-NecessaryApps {
                 }
                 if (-not $downloaded) { throw "Download failed" }
 
-                Write-Output "STATE:$Name:Installing"
-                
-                $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
-                
-                try {
-                    $timeout = if ($Name -eq "Office 2024") { 1800 } else { 180 }
-                    $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
-                    if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
-                        $success = $true 
-                        Write-Output "STATE:$Name:Done"
-                    } else {
+                if ($Name -eq "Office 2024") {
+                    Write-Output "STATE:$Name:ReadyToInstall:$tempExe"
+                    $success = $true
+                } else {
+                    Write-Output "STATE:$Name:Installing"
+                    
+                    $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                    
+                    try {
+                        $timeout = 180
+                        $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
+                        if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
+                            $success = $true 
+                            Write-Output "STATE:$Name:Done"
+                        } else {
+                            Write-Output "STATE:$Name:Error"
+                        }
+                    } catch {
+                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                         Write-Output "STATE:$Name:Error"
                     }
-                } catch {
-                    $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-                    Write-Output "STATE:$Name:Error"
                 }
             } catch { 
                 Write-Output "STATE:$Name:Error"
@@ -168,7 +174,13 @@ function Install-NecessaryApps {
                     if ($out -match "^STATE:(.+?):(.+)$") {
                         $appName = $matches[1]
                         $appState = $matches[2]
-                        if ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
+                        
+                        if ($appState -match "^ReadyToInstall:(.+)$") {
+                            $exePath = $matches[1]
+                            Start-Process -FilePath $exePath
+                            $appStates[$appName] += " - Launched UI"
+                        }
+                        elseif ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
                         elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
                         elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
                         elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
@@ -196,7 +208,13 @@ function Install-NecessaryApps {
                 if ($out -match "^STATE:(.+?):(.+)$") {
                     $appName = $matches[1]
                     $appState = $matches[2]
-                    if ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
+                    
+                    if ($appState -match "^ReadyToInstall:(.+)$") {
+                        $exePath = $matches[1]
+                        Start-Process -FilePath $exePath
+                        $appStates[$appName] += " - Launched UI"
+                    }
+                    elseif ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
                     elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
                     elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
                     elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
