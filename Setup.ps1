@@ -78,7 +78,7 @@ function Install-NecessaryApps {
         @{ Name = "Chrome"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId = "Google.Chrome"; Args = "/silent /install"; MatchName = "Google Chrome" },
         @{ Name = "Klite"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/klite.exe"; WingetId = "CodecGuide.K-LiteCodecPack.Mega"; Args = "/verysilent /norestart /suppressmsgboxes"; MatchName = "K-Lite Codec Pack" },
         @{ Name = "Telegram"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/tele.exe"; WingetId = "Telegram.TelegramDesktop"; Args = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"; MatchName = "Telegram Desktop" },
-        @{ Name = "Ultraview"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId = "DucFabulous.UltraViewer"; Args = "/S"; MatchName = "UltraViewer" },
+        @{ Name = "Ultraview"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId = "DucFabulous.UltraViewer"; Args = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"; MatchName = "UltraViewer" },
         @{ Name = "WinRAR"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId = "RARLab.WinRAR"; Args = "/S"; MatchName = "WinRAR" },
         @{ Name = "Zalo"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId = "VNGCorp.Zalo"; Args = "/S"; MatchName = "Zalo" },
         @{ Name = "Zoom"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId = "Zoom.Zoom"; Args = "/silent"; MatchName = "Zoom" },
