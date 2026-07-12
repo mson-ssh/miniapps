@@ -37,8 +37,8 @@ function Install-NecessaryApps {
     
     # 1. Run Config.ps1 and disk.ps1 from GitHub silently in parallel
     Write-Host "`n[System] Initiating Config and Disk Setup in background..." -ForegroundColor Magenta
-    $configJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Config.ps1 | iex }
-    $diskJob = Start-Job -ScriptBlock { irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/disk.ps1 | iex }
+    $configJob = Start-Job -ScriptBlock { & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/Config.ps1"))) -Silent }
+    $diskJob = Start-Job -ScriptBlock { & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/mson-ssh/miniapps/main/config/disk.ps1"))) -Silent }
     Write-Host "-> Background processes Config.ps1 and disk.ps1 activated!" -ForegroundColor Gray
 
     # 2. Check and install Winget silently (Used for Fallback)
