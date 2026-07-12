@@ -105,6 +105,7 @@ function Install-NecessaryApps {
             $success = $false
             try {
                 $maxRetries = 3; $retry = 0; $downloaded = $false
+                Write-Output "STATE:$Name:Downloading"
                 while ($retry -lt $maxRetries -and -not $downloaded) {
                     try {
                         Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
@@ -178,12 +179,13 @@ function Install-NecessaryApps {
                         if ($appState -match "^ReadyToInstall:(.+)$") {
                             $exePath = $matches[1]
                             Start-Process -FilePath $exePath
-                            $appStates[$appName] += " - Launched UI"
+                            $appStates[$appName] = "Launched UI"
                         }
-                        elseif ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
-                        elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
-                        elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
-                        elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
+                        elseif ($appState -eq "Downloading") { $appStates[$appName] = "Downloading" }
+                        elseif ($appState -eq "Installing") { $appStates[$appName] = "Installing" }
+                        elseif ($appState -eq "Done") { $appStates[$appName] = "Done" }
+                        elseif ($appState -eq "Error") { $appStates[$appName] = "Failed" }
+                        elseif ($appState -eq "Winget") { $appStates[$appName] = "Winget Fallback" }
                         $newData = $true
                     }
                 }
@@ -212,12 +214,13 @@ function Install-NecessaryApps {
                     if ($appState -match "^ReadyToInstall:(.+)$") {
                         $exePath = $matches[1]
                         Start-Process -FilePath $exePath
-                        $appStates[$appName] += " - Launched UI"
+                        $appStates[$appName] = "Launched UI"
                     }
-                    elseif ($appState -eq "Installing") { $appStates[$appName] += " - Installing" }
-                    elseif ($appState -eq "Done") { $appStates[$appName] += " - Done!" }
-                    elseif ($appState -eq "Error") { $appStates[$appName] += " - Failed!" }
-                    elseif ($appState -eq "Winget") { $appStates[$appName] += " - Winget Fallback" }
+                    elseif ($appState -eq "Downloading") { $appStates[$appName] = "Downloading" }
+                    elseif ($appState -eq "Installing") { $appStates[$appName] = "Installing" }
+                    elseif ($appState -eq "Done") { $appStates[$appName] = "Done" }
+                    elseif ($appState -eq "Error") { $appStates[$appName] = "Failed" }
+                    elseif ($appState -eq "Winget") { $appStates[$appName] = "Winget Fallback" }
                 }
             }
             [Console]::SetCursorPosition(0, $startTop)
