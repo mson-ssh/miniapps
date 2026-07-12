@@ -354,8 +354,8 @@ function Draw-Menu {
 
     $options = @(
         "1. Install Necessary App",
-        "2. Informa Necessaryion",
-        "3. Debloatare",
+        "2. Information",
+        "3. Debloatware",
         "4. Exit"
     )
 
