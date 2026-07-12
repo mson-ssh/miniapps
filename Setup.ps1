@@ -12,9 +12,10 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 if (-not $isAdmin) {
     if ($PSCommandPath) {
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    } else {
+    }
+    else {
         $tempScript = "$env:TEMP\winget2_elevated.ps1"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1" -OutFile $tempScript -UseBasicParsing
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mson-ssh/miniapps/main/winget2.ps1" -OutFile $tempScript -UseBasicParsing
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
     }
     exit
@@ -63,31 +64,33 @@ function Install-NecessaryApps {
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
             & winget settings --enable BypassCertificatePinningForMicrosoftStore --accept-source-agreements | Out-Null
             & winget source update --quiet | Out-Null
-        } catch { }
-    } else {
+        }
+        catch { }
+    }
+    else {
         & winget settings --enable BypassCertificatePinningForMicrosoftStore --accept-source-agreements | Out-Null
         & winget source update --quiet | Out-Null
     }
 
     # 3. Install applications utilizing Direct Links from R2 Cloudflare
     $parallelApps = @(
-        @{ Name="EVKey"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId=""; Args="-s"; MatchName="" },
-        @{ Name="Chrome"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId="Google.Chrome"; Args="/silent /install"; MatchName="Google Chrome" },
-        @{ Name="Klite"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/klite.exe"; WingetId="CodecGuide.K-LiteCodecPack.Mega"; Args="/verysilent /norestart /suppressmsgboxes"; MatchName="K-Lite Codec Pack" },
-        @{ Name="Telegram"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/tele.exe"; WingetId="Telegram.TelegramDesktop"; Args="/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"; MatchName="Telegram Desktop" },
-        @{ Name="Ultraview"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId="DucFabulous.UltraViewer"; Args="/S"; MatchName="UltraViewer" },
-        @{ Name="WinRAR"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId="RARLab.WinRAR"; Args="/S"; MatchName="WinRAR" },
-        @{ Name="Zalo"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId="VNGCorp.Zalo"; Args="/S"; MatchName="Zalo" },
-        @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent"; MatchName="Zoom" },
-        @{ Name="Office 2024"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe"; WingetId=""; Args=""; MatchName="Microsoft Office|Microsoft 365" }
+        @{ Name = "EVKey"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/EVKey.exe"; WingetId = ""; Args = "-s"; MatchName = "" },
+        @{ Name = "Chrome"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/chrome.exe"; WingetId = "Google.Chrome"; Args = "/silent /install"; MatchName = "Google Chrome" },
+        @{ Name = "Klite"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/klite.exe"; WingetId = "CodecGuide.K-LiteCodecPack.Mega"; Args = "/verysilent /norestart /suppressmsgboxes"; MatchName = "K-Lite Codec Pack" },
+        @{ Name = "Telegram"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/tele.exe"; WingetId = "Telegram.TelegramDesktop"; Args = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"; MatchName = "Telegram Desktop" },
+        @{ Name = "Ultraview"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/ultrav.exe"; WingetId = "DucFabulous.UltraViewer"; Args = "/S"; MatchName = "UltraViewer" },
+        @{ Name = "WinRAR"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId = "RARLab.WinRAR"; Args = "/S"; MatchName = "WinRAR" },
+        @{ Name = "Zalo"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId = "VNGCorp.Zalo"; Args = "/S"; MatchName = "Zalo" },
+        @{ Name = "Zoom"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId = "Zoom.Zoom"; Args = "/silent"; MatchName = "Zoom" },
+        @{ Name = "Office 2024"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe"; WingetId = ""; Args = ""; MatchName = "Microsoft Office|Microsoft 365" }
     )
 
     $sequentialApps = @(
-        @{ Name="VCRedist x64"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe"; WingetId="Microsoft.VCRedist.2015+.x64"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x64" },
-        @{ Name="VCRedist x86"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId="Microsoft.VCRedist.2015+.x86"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x86" }
+        @{ Name = "VCRedist x64"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe"; WingetId = "Microsoft.VCRedist.2015+.x64"; Args = "/install /quiet /norestart"; MatchName = "Microsoft Visual C\+\+.*x64" },
+        @{ Name = "VCRedist x86"; Url = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId = "Microsoft.VCRedist.2015+.x86"; Args = "/install /quiet /norestart"; MatchName = "Microsoft Visual C\+\+.*x86" }
     )
 
-    Write-Host "`n[Start] Downloading and installing primary applications in parallel..." -ForegroundColor Cyan
+    Write-Host "`n[Start] Downloading and installing $($parallelApps.Count) primary applications in parallel..." -ForegroundColor Cyan
     $jobs = @()
     $appStates = @{}
     foreach ($app in $parallelApps) {
@@ -110,7 +113,8 @@ function Install-NecessaryApps {
                     try {
                         Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
                         $downloaded = $true
-                    } catch {
+                    }
+                    catch {
                         $retry++
                         if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
                     }
@@ -120,26 +124,31 @@ function Install-NecessaryApps {
                 if ($Name -eq "Office 2024") {
                     Write-Output "STATE:$Name:ReadyToInstall:$tempExe"
                     $success = $true
-                } else {
+                }
+                else {
                     Write-Output "STATE:$Name:Installing"
                     
                     $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
                     
                     try {
                         $timeout = 180
+                        if ($Name -eq "EVKey") { $timeout = 15 }
                         $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
-                        if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
+                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
                             $success = $true 
                             Write-Output "STATE:$Name:Done"
-                        } else {
+                        }
+                        else {
                             Write-Output "STATE:$Name:Error"
                         }
-                    } catch {
+                    }
+                    catch {
                         $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                         Write-Output "STATE:$Name:Error"
                     }
                 }
-            } catch { 
+            }
+            catch { 
                 Write-Output "STATE:$Name:Error"
             }
 
@@ -149,7 +158,8 @@ function Install-NecessaryApps {
                 try {
                     $proc | Wait-Process -Timeout 180 -ErrorAction Stop
                     if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
-                } catch {
+                }
+                catch {
                     $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                     Write-Output "STATE:$Name:Error"
                 }
@@ -190,10 +200,14 @@ function Install-NecessaryApps {
                     if (-not $downloaded) { throw "Download failed" }
 
                     Write-Output "STATE:$Name:Installing"
+                    if ($Name -match "VCRedist") {
+                        $msiWait = 0
+                        while ((Get-Process msiexec -ErrorAction SilentlyContinue) -and $msiWait -lt 60) { Start-Sleep -Seconds 2; $msiWait += 2 }
+                    }
                     $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
                     try {
                         $proc | Wait-Process -Timeout 180 -ErrorAction Stop
-                        if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
+                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
                             $success = $true 
                             Write-Output "STATE:$Name:Done"
                         } else {
@@ -212,7 +226,7 @@ function Install-NecessaryApps {
                     $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
                     try {
                         $proc | Wait-Process -Timeout 180 -ErrorAction Stop
-                        if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
+                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
                     } catch {
                         $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                         Write-Output "STATE:$Name:Error"
@@ -300,7 +314,6 @@ function Install-NecessaryApps {
     }
     Wait-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
-
     Write-Host "`n[Completed] The entire installation and setup process has finished!" -ForegroundColor Green
 }
 
@@ -316,11 +329,13 @@ function Show-SystemInfo {
 }
 
 function Run-Debloatware {
-    Write-Host "`n[System] Launching Windows Debloatware utility (Silent Default Profile)..." -ForegroundColor Cyan
+    Write-Host "`n[System] Launching Windows Debloatware utility..." -ForegroundColor Cyan
     try {
-        & ([scriptblock]::Create((irm "https://debloat.raphi.re/"))) -RunDefaults
-        Write-Host "`n[OK] Debloatware utility exited successfully!" -ForegroundColor Green
-    } catch {
+        & ([scriptblock]::Create((irm "https://debloat.raphi.re/")))
+        Write-Host "`n[OK] Debloatware utility exited successfully!"olor Green
+    }
+    catch {
+     
         Write-Host "`n[ERROR] Failed to run Debloatware utility: $_" -ForegroundColor Red
     }
 }
@@ -340,8 +355,8 @@ function Draw-Menu {
 
     $options = @(
         "1. Install Necessary App",
-        "2. Information",
-        "3. Debloatware",
+        "2. Informa Necessaryion",
+        "3. Debloatare",
         "4. Exit"
     )
 

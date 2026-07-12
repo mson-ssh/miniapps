@@ -100,12 +100,17 @@ try {
     
     Start-Sleep -Seconds 3
     $formattedD = $false
-    for ($i = 0; $i -lt 3; $i++) {
+    for ($i = 0; $i -lt 5; $i++) {
         try {
-            Format-Volume -Partition $partD -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+            $partD = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber
+            if ($partD.DriveLetter) {
+                Format-Volume -DriveLetter $partD.DriveLetter -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+            } else {
+                Format-Volume -Partition $partD -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+            }
             $formattedD = $true
             break
-        } catch { Start-Sleep -Seconds 2 }
+        } catch { Start-Sleep -Seconds 3 }
     }
     if (-not $formattedD) { throw "Failed to format D" }
 
@@ -119,12 +124,17 @@ try {
         
         Start-Sleep -Seconds 3
         $formattedE = $false
-        for ($i = 0; $i -lt 3; $i++) {
+        for ($i = 0; $i -lt 5; $i++) {
             try {
-                Format-Volume -Partition $partE -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+                $partE = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber
+                if ($partE.DriveLetter) {
+                    Format-Volume -DriveLetter $partE.DriveLetter -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+                } else {
+                    Format-Volume -Partition $partE -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+                }
                 $formattedE = $true
                 break
-            } catch { Start-Sleep -Seconds 2 }
+            } catch { Start-Sleep -Seconds 3 }
         }
         if (-not $formattedE) { throw "Failed to format E" }
 
