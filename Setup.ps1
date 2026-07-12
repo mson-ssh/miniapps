@@ -79,12 +79,15 @@ function Install-NecessaryApps {
         @{ Name="WinRAR"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe"; WingetId="RARLab.WinRAR"; Args="/S"; MatchName="WinRAR" },
         @{ Name="Zalo"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe"; WingetId="VNGCorp.Zalo"; Args="/S"; MatchName="Zalo" },
         @{ Name="Zoom"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe"; WingetId="Zoom.Zoom"; Args="/silent"; MatchName="Zoom" },
-        @{ Name="Office 2024"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe"; WingetId=""; Args=""; MatchName="Microsoft Office|Microsoft 365" },
+        @{ Name="Office 2024"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe"; WingetId=""; Args=""; MatchName="Microsoft Office|Microsoft 365" }
+    )
+
+    $sequentialApps = @(
         @{ Name="VCRedist x64"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe"; WingetId="Microsoft.VCRedist.2015+.x64"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x64" },
         @{ Name="VCRedist x86"; Url="https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x86.exe"; WingetId="Microsoft.VCRedist.2015+.x86"; Args="/install /quiet /norestart"; MatchName="Microsoft Visual C\+\+.*x86" }
     )
 
-    Write-Host "`n[Start] Downloading and installing $($parallelApps.Count) primary applications in parallel..." -ForegroundColor Cyan
+    Write-Host "`n[Start] Downloading and installing primary applications in parallel..." -ForegroundColor Cyan
     $jobs = @()
     $appStates = @{}
     foreach ($app in $parallelApps) {
@@ -120,10 +123,6 @@ function Install-NecessaryApps {
                 } else {
                     Write-Output "STATE:$Name:Installing"
                     
-                    if ($Name -match "VCRedist") {
-                        while (Get-Process msiexec -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }
-                    }
-
                     $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
                     
                     try {
@@ -159,11 +158,78 @@ function Install-NecessaryApps {
         $jobs += $job
     }
 
+    $sequentialAppsToRun = @()
+    foreach ($app in $sequentialApps) {
+        if ($app.MatchName -and (Test-IsInstalled $app.MatchName)) {
+            $appStates[$app.Name] = "Already Installed"
+        } else {
+            $appStates[$app.Name] = "Waiting"
+            $sequentialAppsToRun += $app
+        }
+    }
+    
+    if ($sequentialAppsToRun.Count -gt 0) {
+        $seqJob = Start-Job -ScriptBlock {
+            param($Apps)
+            foreach ($app in $Apps) {
+                $Name = $app.Name; $Url = $app.Url; $WingetId = $app.WingetId; $ArgsStr = $app.Args
+                $tempExe = "$env:TEMP\MiniAZ_Apps\$Name.exe"
+                $success = $false
+                try {
+                    $maxRetries = 3; $retry = 0; $downloaded = $false
+                    Write-Output "STATE:$Name:Downloading"
+                    while ($retry -lt $maxRetries -and -not $downloaded) {
+                        try {
+                            Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                            $downloaded = $true
+                        } catch {
+                            $retry++
+                            if ($retry -lt $maxRetries) { Start-Sleep -Seconds 2 }
+                        }
+                    }
+                    if (-not $downloaded) { throw "Download failed" }
+
+                    Write-Output "STATE:$Name:Installing"
+                    $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                    try {
+                        $proc | Wait-Process -Timeout 180 -ErrorAction Stop
+                        if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1638) { 
+                            $success = $true 
+                            Write-Output "STATE:$Name:Done"
+                        } else {
+                            Write-Output "STATE:$Name:Error"
+                        }
+                    } catch {
+                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                        Write-Output "STATE:$Name:Error"
+                    }
+                } catch { 
+                    Write-Output "STATE:$Name:Error"
+                }
+
+                if (-not $success -and $WingetId) {
+                    Write-Output "STATE:$Name:Winget"
+                    $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
+                    try {
+                        $proc | Wait-Process -Timeout 180 -ErrorAction Stop
+                        if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { Write-Output "STATE:$Name:Done" } else { Write-Output "STATE:$Name:Error" }
+                    } catch {
+                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                        Write-Output "STATE:$Name:Error"
+                    }
+                }
+            }
+        } -ArgumentList (,$sequentialAppsToRun)
+        $jobs += $seqJob
+    }
+    
+    $allApps = $parallelApps + $sequentialApps
+
     # 4. Display background processes visually (Dynamic status table)
     Write-Host "`n[Progress] Processing parallel applications..." -ForegroundColor Cyan
     
     $startTop = [Console]::CursorTop
-    foreach ($app in $parallelApps) {
+    foreach ($app in $allApps) {
         Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]) -ForegroundColor Yellow
     }
 
@@ -195,7 +261,7 @@ function Install-NecessaryApps {
         
         if ($newData) {
             [Console]::SetCursorPosition(0, $startTop)
-            foreach ($app in $parallelApps) {
+            foreach ($app in $allApps) {
                 $line = "   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]
                 Write-Host $line.PadRight(80) -ForegroundColor Yellow
             }
@@ -225,7 +291,7 @@ function Install-NecessaryApps {
                 }
             }
             [Console]::SetCursorPosition(0, $startTop)
-            foreach ($app in $parallelApps) {
+            foreach ($app in $allApps) {
                 $line = "   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]
                 Write-Host $line.PadRight(80) -ForegroundColor Yellow
             }
