@@ -100,14 +100,10 @@ try {
     
     Start-Sleep -Seconds 3
     $formattedD = $false
-    for ($i = 0; $i -lt 5; $i++) {
+    for ($i = 0; $i -lt 10; $i++) {
         try {
-            $partD = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber
-            if ($partD.DriveLetter) {
-                Format-Volume -DriveLetter $partD.DriveLetter -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
-            } else {
-                Format-Volume -Partition $partD -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
-            }
+            $currentPart = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber -ErrorAction Stop
+            $currentPart | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
             $formattedD = $true
             break
         } catch { Start-Sleep -Seconds 3 }
@@ -124,14 +120,10 @@ try {
         
         Start-Sleep -Seconds 3
         $formattedE = $false
-        for ($i = 0; $i -lt 5; $i++) {
+        for ($i = 0; $i -lt 10; $i++) {
             try {
-                $partE = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber
-                if ($partE.DriveLetter) {
-                    Format-Volume -DriveLetter $partE.DriveLetter -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
-                } else {
-                    Format-Volume -Partition $partE -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
-                }
+                $currentPartE = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber -ErrorAction Stop
+                $currentPartE | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
                 $formattedE = $true
                 break
             } catch { Start-Sleep -Seconds 3 }

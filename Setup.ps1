@@ -101,6 +101,7 @@ function Install-NecessaryApps {
         $appStates[$app.Name] = "Downloading"
         $job = Start-Job -ScriptBlock {
             param($Name, $Url, $WingetId, $ArgsStr)
+            $ProgressPreference = 'SilentlyContinue'
             $tempDir = "$env:TEMP\MiniAZ_Apps"
             if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
             $tempExe = "$tempDir\$Name.exe"
@@ -181,6 +182,7 @@ function Install-NecessaryApps {
     if ($sequentialAppsToRun.Count -gt 0) {
         $seqJob = Start-Job -ScriptBlock {
             param($Apps)
+            $ProgressPreference = 'SilentlyContinue'
             foreach ($app in $Apps) {
                 $Name = $app.Name; $Url = $app.Url; $WingetId = $app.WingetId; $ArgsStr = $app.Args
                 $tempExe = "$env:TEMP\MiniAZ_Apps\$Name.exe"
