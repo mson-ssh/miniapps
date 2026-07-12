@@ -2,6 +2,10 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # =========================================================================
+# MINIAZ SETUP SCRIPT
+# =========================================================================
+$ProgressPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
 # GLOBAL FUNCTIONS
 # =========================================================================
 
