@@ -98,7 +98,17 @@ try {
         $partD = New-Partition -DiskNumber $osDisk.Number -UseMaximumSize -AssignDriveLetter -ErrorAction Stop
     }
     
-    Format-Volume -Partition $partD -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+    Start-Sleep -Seconds 3
+    $formattedD = $false
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            Format-Volume -Partition $partD -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+            $formattedD = $true
+            break
+        } catch { Start-Sleep -Seconds 2 }
+    }
+    if (-not $formattedD) { throw "Failed to format D" }
+
     if ($partD.DriveLetter -ne 'D') {
         Set-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber -NewDriveLetter D -ErrorAction SilentlyContinue
     }
@@ -107,7 +117,17 @@ try {
     if ($plan.HasE) {
         $partE = New-Partition -DiskNumber $osDisk.Number -UseMaximumSize -AssignDriveLetter -ErrorAction Stop
         
-        Format-Volume -Partition $partE -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+        Start-Sleep -Seconds 3
+        $formattedE = $false
+        for ($i = 0; $i -lt 3; $i++) {
+            try {
+                Format-Volume -Partition $partE -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
+                $formattedE = $true
+                break
+            } catch { Start-Sleep -Seconds 2 }
+        }
+        if (-not $formattedE) { throw "Failed to format E" }
+
         if ($partE.DriveLetter -ne 'E') {
             Set-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber -NewDriveLetter E -ErrorAction SilentlyContinue
         }
