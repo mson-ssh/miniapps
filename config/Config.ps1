@@ -34,6 +34,7 @@ $status = @{
     FastStartup  = $false
     DNS          = $false
     Timezone     = $false
+    UAC          = $false
 }
 
 # ----------------------------- ADMIN CHECK --------------------------------------
@@ -158,6 +159,15 @@ catch {
 try {
     Set-TimeZone -Id $TimezoneID -ErrorAction Stop
     $status.Timezone = $true
+}
+catch {
+}
+
+# ----------------------------- 8. UAC CONFIGURATION ------------------------------
+try {
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 0 -Force
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "PromptOnSecureDesktop" -Value 0 -Force
+    $status.UAC = $true
 }
 catch {
 }
