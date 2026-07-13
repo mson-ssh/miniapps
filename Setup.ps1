@@ -197,7 +197,8 @@ function Install-NecessaryApps {
             $ProgressPreference = 'SilentlyContinue'
             foreach ($app in $Apps) {
                 $Name = $app.Name; $Url = $app.Url; $WingetId = $app.WingetId; $ArgsStr = $app.Args
-                $tempExe = "$env:TEMP\MiniAZ_Apps\$Name.exe"
+                $fileName = $Url.Split('/')[-1]
+                $tempExe = "$env:TEMP\MiniAZ_Apps\$fileName"
                 
                 $success = $false
                 if ($Method -eq 'Winget' -and $WingetId) {
