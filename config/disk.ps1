@@ -46,6 +46,25 @@ try {
     # ------------------------- STEP 1: SAFE RELABEL C: --------------------------
     Set-Volume -DriveLetter C -NewFileSystemLabel $LabelC -ErrorAction Stop
 
+    # ------------------------- STEP 1.5: DISABLE BITLOCKER ----------------------
+    # BitLocker locks files at the end of the volume and prevents shrinking.
+    # Decrypting C: allows Resize-Partition to shrink the maximum available space.
+    $bde = Get-BitLockerVolume -MountPoint C: -ErrorAction SilentlyContinue
+    if ($bde -and ($bde.VolumeStatus -ne 'FullyDecrypted')) {
+        # Trigger decryption (using both PS cmdlet and manage-bde for universal compatibility)
+        Disable-BitLocker -MountPoint C: -ErrorAction SilentlyContinue | Out-Null
+        manage-bde -off C: | Out-Null
+        
+        # Wait for decryption to complete (background process)
+        while ($true) {
+            $status = (Get-BitLockerVolume -MountPoint C: -ErrorAction SilentlyContinue).VolumeStatus
+            if (-not $status -or $status -eq 'FullyDecrypted') {
+                break
+            }
+            Start-Sleep -Seconds 5
+        }
+    }
+
     # ------------------------- STEP 2: DETECT SSD SIZE & SAFETY CHECK -----------
     $osPartition = Get-Partition -DriveLetter C -ErrorAction Stop
     $osDisk      = Get-Disk -Number $osPartition.DiskNumber -ErrorAction Stop
