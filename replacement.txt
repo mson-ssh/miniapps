@@ -1,0 +1,147 @@
+    $allApps = $parallelApps + $sequentialApps
+    $appStates = @{}
+    $downloadTasks = @{}
+    $webClients = @{}
+    $installQueue = @()
+    
+    $tempDir = "$env:TEMP\MiniAZ_Apps"
+    if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
+    
+    # C# UI helper to bring window to front
+    $uiCode = @'
+    using System;
+    using System.Runtime.InteropServices;
+    public class Win32UI {
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+    }
+'@
+    Add-Type -TypeDefinition $uiCode -ErrorAction SilentlyContinue
+
+    Write-Host "`n[Progress] Parallel Downloading & Sequential Installing..." -ForegroundColor Cyan
+    $startTop = [Console]::CursorTop
+    foreach ($app in $allApps) {
+        if ($app.MatchName -and (Test-IsInstalled $app.MatchName)) {
+            $appStates[$app.Name] = "Already Installed"
+        } elseif ($app.Name -eq "EVKey" -and (Test-Path "C:\EVKey")) {
+            $appStates[$app.Name] = "Already Installed"
+        } else {
+            if ($Method -eq 'Winget' -and $app.WingetId) {
+                $appStates[$app.Name] = "Waiting to Install"
+                $installQueue += $app.Name
+            } else {
+                $appStates[$app.Name] = "Downloading"
+                $fileName = $app.Url.Split('/')[-1]
+                $tempExe = "$tempDir\$fileName"
+                
+                # Start parallel download task via C# WebClient to bypass RAM buffering
+                $wc = New-Object System.Net.WebClient
+                $webClients[$app.Name] = $wc
+                $downloadTasks[$app.Name] = $wc.DownloadFileTaskAsync($app.Url, $tempExe)
+            }
+        }
+        Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]) -ForegroundColor Yellow
+    }
+
+    $currentInstallApp = $null
+    $currentInstallProc = $null
+    $installTimeoutTime = $null
+
+    while ($downloadTasks.Count -gt 0 -or $installQueue.Count -gt 0 -or $currentInstallApp) {
+        $uiUpdated = $false
+        
+        # 1. Check Download Tasks
+        $completedDownloads = @()
+        foreach ($key in $downloadTasks.Keys) {
+            $task = $downloadTasks[$key]
+            if ($task.IsCompleted) {
+                if ($task.IsFaulted) {
+                    $appStates[$key] = "Failed (Download)"
+                } else {
+                    $appStates[$key] = "Waiting to Install"
+                    $installQueue += $key
+                }
+                $completedDownloads += $key
+                $uiUpdated = $true
+            }
+        }
+        foreach ($key in $completedDownloads) {
+            $downloadTasks.Remove($key)
+            $webClients[$key].Dispose()
+        }
+        
+        # 2. Check current install process
+        if ($currentInstallApp) {
+            if ($currentInstallProc) {
+                if ($currentInstallProc.HasExited) {
+                    if ($currentInstallProc.ExitCode -eq 0 -or $currentInstallProc.ExitCode -eq 3010 -or $currentInstallProc.ExitCode -eq -1978335201) {
+                        $appStates[$currentInstallApp] = "Done"
+                    } else {
+                        $appStates[$currentInstallApp] = "Failed (ExitCode: $($currentInstallProc.ExitCode))"
+                    }
+                    $currentInstallApp = $null
+                    $currentInstallProc = $null
+                    $uiUpdated = $true
+                } elseif ($installTimeoutTime -and (Get-Date) -gt $installTimeoutTime) {
+                    $currentInstallProc | Stop-Process -Force -ErrorAction SilentlyContinue
+                    $appStates[$currentInstallApp] = "Failed (Timeout)"
+                    $currentInstallApp = $null
+                    $currentInstallProc = $null
+                    $uiUpdated = $true
+                }
+            } else {
+                # Process was launched without process object (e.g., EVKey hidden)
+                $appStates[$currentInstallApp] = "Done"
+                $currentInstallApp = $null
+                $uiUpdated = $true
+            }
+        }
+        
+        # 3. Pick next install from queue
+        if (-not $currentInstallApp -and $installQueue.Count -gt 0) {
+            $currentInstallApp = $installQueue[0]
+            # Remove from queue
+            if ($installQueue.Count -eq 1) { $installQueue = @() } else { $installQueue = $installQueue[1..($installQueue.Count - 1)] }
+            
+            $appStates[$currentInstallApp] = "Installing"
+            $uiUpdated = $true
+            $installTimeoutTime = (Get-Date).AddSeconds(300) # 5 minutes timeout per app
+            
+            $appObj = $allApps | Where-Object { $_.Name -eq $currentInstallApp }
+            $fileName = $appObj.Url.Split('/')[-1]
+            $tempExe = "$tempDir\$fileName"
+            
+            if ($Method -eq 'Winget' -and $appObj.WingetId) {
+                $currentInstallProc = Start-Process winget -ArgumentList "install --id $($appObj.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
+            } else {
+                if ($appObj.Name -eq "EVKey") {
+                    Start-Process -FilePath $tempExe -ArgumentList $appObj.Args -WindowStyle Hidden
+                    Start-Sleep -Seconds 3
+                    $currentInstallProc = $null
+                } else {
+                    if ([string]::IsNullOrWhiteSpace($appObj.Args)) {
+                        $currentInstallProc = Start-Process -FilePath $tempExe -PassThru
+                        # Bring interactive installers to foreground
+                        Start-Sleep -Seconds 3
+                        $hwnd = [Win32UI]::FindWindow($null, "Microsoft Office")
+                        if ($hwnd -ne [IntPtr]::Zero) { [Win32UI]::SetForegroundWindow($hwnd) | Out-Null }
+                    } else {
+                        $currentInstallProc = Start-Process -FilePath $tempExe -ArgumentList $appObj.Args -PassThru
+                    }
+                }
+            }
+        }
+        
+        # Update UI if anything changed
+        if ($uiUpdated) {
+            [Console]::SetCursorPosition(0, $startTop)
+            foreach ($app in $allApps) {
+                $line = "   [+] {0} - {1}" -f $app.Name.PadRight(12), $appStates[$app.Name]
+                Write-Host $line.PadRight(80) -ForegroundColor Yellow
+            }
+        }
+        
+        Start-Sleep -Milliseconds 200
+    }
