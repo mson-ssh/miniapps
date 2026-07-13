@@ -103,6 +103,10 @@ function Install-NecessaryApps {
             $appStates[$app.Name] = "Already Installed"
             continue
         }
+        if ($app.Name -eq "EVKey" -and (Test-Path "C:\EVKey")) {
+            $appStates[$app.Name] = "Already Installed"
+            continue
+        }
         $appStates[$app.Name] = "Downloading"
         $job = Start-Job -ScriptBlock {
             param($Name, $Url, $WingetId, $ArgsStr, $Method)
@@ -139,23 +143,28 @@ function Install-NecessaryApps {
 
                     Write-Output "STATE:$Name:Installing"
                     
-                    $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
-                        
-                    try {
-                        $timeout = 180
-                        if ($Name -eq "EVKey") { $timeout = 15 }
-                        $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
-                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
-                            $success = $true 
-                            Write-Output "STATE:$Name:Done"
+                    if ($Name -eq "EVKey") {
+                        Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -WindowStyle Hidden
+                        Start-Sleep -Seconds 3
+                        $success = $true
+                        Write-Output "STATE:$Name:Done"
+                    } else {
+                        $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                            
+                        try {
+                            $proc | Wait-Process -Timeout 180 -ErrorAction Stop
+                            if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
+                                $success = $true 
+                                Write-Output "STATE:$Name:Done"
+                            }
+                            else {
+                                Write-Output "STATE:$Name:Error"
+                            }
                         }
-                        else {
+                        catch {
+                            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
                             Write-Output "STATE:$Name:Error"
                         }
-                    }
-                    catch {
-                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-                        Write-Output "STATE:$Name:Error"
                     }
                 }
                 catch { 
