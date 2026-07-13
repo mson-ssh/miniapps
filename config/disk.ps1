@@ -49,20 +49,26 @@ try {
     # ------------------------- STEP 1.5: DISABLE BITLOCKER ----------------------
     # BitLocker locks files at the end of the volume and prevents shrinking.
     # Decrypting C: allows Resize-Partition to shrink the maximum available space.
-    $bde = Get-BitLockerVolume -MountPoint C: -ErrorAction SilentlyContinue
-    if ($bde -and ($bde.VolumeStatus -ne 'FullyDecrypted')) {
-        # Trigger decryption (using both PS cmdlet and manage-bde for universal compatibility)
-        Disable-BitLocker -MountPoint C: -ErrorAction SilentlyContinue | Out-Null
-        manage-bde -off C: | Out-Null
-        
-        # Wait for decryption to complete (background process)
-        while ($true) {
-            $status = (Get-BitLockerVolume -MountPoint C: -ErrorAction SilentlyContinue).VolumeStatus
-            if (-not $status -or $status -eq 'FullyDecrypted') {
-                break
+    try {
+        if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+            $bde = Get-BitLockerVolume -MountPoint C: -ErrorAction Stop
+            if ($bde -and ($bde.VolumeStatus -ne 'FullyDecrypted')) {
+                # Trigger decryption (using both PS cmdlet and manage-bde for universal compatibility)
+                Disable-BitLocker -MountPoint C: -ErrorAction SilentlyContinue | Out-Null
+                manage-bde -off C: | Out-Null
+                
+                # Wait for decryption to complete (background process)
+                while ($true) {
+                    $status = (Get-BitLockerVolume -MountPoint C: -ErrorAction SilentlyContinue).VolumeStatus
+                    if (-not $status -or $status -eq 'FullyDecrypted') {
+                        break
+                    }
+                    Start-Sleep -Seconds 5
+                }
             }
-            Start-Sleep -Seconds 5
         }
+    } catch { 
+        # Ignore missing module errors on older Windows versions
     }
 
     # ------------------------- STEP 2: DETECT SSD SIZE & SAFETY CHECK -----------
@@ -105,6 +111,9 @@ try {
     if ($targetCSize -le 30GB) {
         exit 1
     }
+
+    # Disable hibernation to clear hiberfil.sys (unmovable file that prevents shrinking)
+    try { powercfg /h off | Out-Null } catch {}
 
     Resize-Partition -DriveLetter C -Size $targetCSize -ErrorAction Stop
 

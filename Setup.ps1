@@ -38,7 +38,13 @@ function Install-NecessaryApps {
             "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
         )
         $installed = Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match $pattern }
-        return [bool]$installed
+        if ($installed) { return $true }
+        
+        # Explicit checks for local AppData installations like Zalo and Telegram
+        if ($pattern -match "Zalo" -and (Test-Path "$env:LOCALAPPDATA\Programs\Zalo\Zalo.exe")) { return $true }
+        if ($pattern -match "Telegram" -and (Test-Path "$env:APPDATA\Telegram Desktop\Telegram.exe")) { return $true }
+        
+        return $false
     }
     
     # 1. Run Config.ps1 and disk.ps1 from GitHub silently in parallel
@@ -111,6 +117,20 @@ function Install-NecessaryApps {
         $job = Start-Job -ScriptBlock {
             param($Name, $Url, $WingetId, $ArgsStr, $Method)
             $ProgressPreference = 'SilentlyContinue'
+            
+            # C# UI helper to bring window to front
+            $uiCode = @'
+            using System;
+            using System.Runtime.InteropServices;
+            public class Win32UI {
+                [DllImport("user32.dll", SetLastError = true)]
+                public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+                [DllImport("user32.dll")]
+                public static extern bool SetForegroundWindow(IntPtr hWnd);
+            }
+'@
+            Add-Type -TypeDefinition $uiCode -ErrorAction SilentlyContinue
+
             $tempDir = "$env:TEMP\MiniAZ_Apps"
             if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
             $fileName = $Url.Split('/')[-1]
@@ -132,7 +152,7 @@ function Install-NecessaryApps {
                     Write-Output "STATE:$Name:Downloading"
                     while ($retry -lt $maxRetries -and -not $downloaded) {
                         try {
-                            Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                            Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 90 -ErrorAction Stop
                             $downloaded = $true
                         }
                         catch {
@@ -152,6 +172,12 @@ function Install-NecessaryApps {
                     } else {
                         if ([string]::IsNullOrWhiteSpace($ArgsStr)) {
                             $proc = Start-Process -FilePath $tempExe -PassThru
+                            
+                            # Bring interactive installers (like Office) to foreground
+                            Start-Sleep -Seconds 3
+                            $hwnd = [Win32UI]::FindWindow($null, "Microsoft Office")
+                            if ($hwnd -ne [IntPtr]::Zero) { [Win32UI]::SetForegroundWindow($hwnd) | Out-Null }
+                            
                         } else {
                             $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
                         }
@@ -216,7 +242,7 @@ function Install-NecessaryApps {
                         Write-Output "STATE:$Name:Downloading"
                         while ($retry -lt $maxRetries -and -not $downloaded) {
                             try {
-                                Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                                Invoke-WebRequest -Uri $Url -OutFile $tempExe -UseBasicParsing -TimeoutSec 90 -ErrorAction Stop
                                 $downloaded = $true
                             } catch {
                                 $retry++
