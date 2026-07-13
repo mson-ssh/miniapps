@@ -114,7 +114,7 @@ function Install-NecessaryApps {
             $success = $false
             if ($Method -eq 'Winget' -and $WingetId) {
                 Write-Output "STATE:$Name:Installing"
-                $proc = Start-Process -FilePath "winget" -ArgumentList "install --id $WingetId --exact --silent --accept-package-agreements --accept-source-agreements" -PassThru
+                $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
                 try {
                     $proc | Wait-Process -Timeout 300 -ErrorAction Stop
                     if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0) { $success = $true; Write-Output "STATE:$Name:Done" }
@@ -137,31 +137,25 @@ function Install-NecessaryApps {
                     }
                     if (-not $downloaded) { throw "Download failed" }
 
-                    if ($Name -eq "Office 2024") {
-                        Write-Output "STATE:$Name:ReadyToInstall:$tempExe"
-                        $success = $true
-                    }
-                    else {
-                        Write-Output "STATE:$Name:Installing"
+                    Write-Output "STATE:$Name:Installing"
+                    
+                    $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
                         
-                        $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
-                        
-                        try {
-                            $timeout = 180
-                            if ($Name -eq "EVKey") { $timeout = 15 }
-                            $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
-                            if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
-                                $success = $true 
-                                Write-Output "STATE:$Name:Done"
-                            }
-                            else {
-                                Write-Output "STATE:$Name:Error"
-                            }
+                    try {
+                        $timeout = 180
+                        if ($Name -eq "EVKey") { $timeout = 15 }
+                        $proc | Wait-Process -Timeout $timeout -ErrorAction Stop
+                        if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 
+                            $success = $true 
+                            Write-Output "STATE:$Name:Done"
                         }
-                        catch {
-                            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                        else {
                             Write-Output "STATE:$Name:Error"
                         }
+                    }
+                    catch {
+                        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                        Write-Output "STATE:$Name:Error"
                     }
                 }
                 catch { 
@@ -194,7 +188,7 @@ function Install-NecessaryApps {
                 $success = $false
                 if ($Method -eq 'Winget' -and $WingetId) {
                     Write-Output "STATE:$Name:Installing"
-                    $proc = Start-Process -FilePath "winget" -ArgumentList "install --id $WingetId --exact --silent --accept-package-agreements --accept-source-agreements" -PassThru
+                    $proc = Start-Process winget -ArgumentList "install --id $WingetId --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements" -PassThru -NoNewWindow
                     try {
                         $proc | Wait-Process -Timeout 300 -ErrorAction Stop
                         if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0) { $success = $true; Write-Output "STATE:$Name:Done" }
@@ -254,12 +248,7 @@ function Install-NecessaryApps {
                         $appName = $matches[1]
                         $appState = $matches[2]
                         
-                        if ($appState -match "^ReadyToInstall:(.+)$") {
-                            $exePath = $matches[1]
-                            Start-Process -FilePath $exePath
-                            $appStates[$appName] = "Launched UI"
-                        }
-                        elseif ($appState -eq "Downloading") { $appStates[$appName] = "Downloading" }
+                        if ($appState -eq "Downloading") { $appStates[$appName] = "Downloading" }
                         elseif ($appState -eq "Installing") { $appStates[$appName] = "Installing" }
                         elseif ($appState -eq "Done") { $appStates[$appName] = "Done" }
                         elseif ($appState -eq "Error") { $appStates[$appName] = "Failed" }
@@ -289,12 +278,7 @@ function Install-NecessaryApps {
                     $appName = $matches[1]
                     $appState = $matches[2]
                     
-                    if ($appState -match "^ReadyToInstall:(.+)$") {
-                        $exePath = $matches[1]
-                        Start-Process -FilePath $exePath
-                        $appStates[$appName] = "Launched UI"
-                    }
-                    elseif ($appState -eq "Downloading") { $appStates[$appName] = "Downloading" }
+                    if ($appState -eq "Downloading") { $appStates[$appName] = "Downloading" }
                     elseif ($appState -eq "Installing") { $appStates[$appName] = "Installing" }
                     elseif ($appState -eq "Done") { $appStates[$appName] = "Done" }
                     elseif ($appState -eq "Error") { $appStates[$appName] = "Failed" }
