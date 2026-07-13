@@ -99,13 +99,17 @@ try {
     }
     
     Start-Sleep -Seconds 3
+    Update-HostStorageCache
     $formattedD = $false
     for ($i = 0; $i -lt 10; $i++) {
         try {
             $currentPart = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber -ErrorAction Stop
-            $currentPart | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Confirm:$false -ErrorAction Stop | Out-Null
-            $formattedD = $true
-            break
+            $currentPart | Get-Volume | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Force -Confirm:$false -ErrorAction Stop | Out-Null
+            $vol = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber | Get-Volume
+            if ($vol.FileSystem -match "NTFS") {
+                $formattedD = $true
+                break
+            }
         } catch { Start-Sleep -Seconds 3 }
     }
     if (-not $formattedD) { throw "Failed to format D" }
@@ -119,13 +123,17 @@ try {
         $partE = New-Partition -DiskNumber $osDisk.Number -UseMaximumSize -AssignDriveLetter -ErrorAction Stop
         
         Start-Sleep -Seconds 3
+        Update-HostStorageCache
         $formattedE = $false
         for ($i = 0; $i -lt 10; $i++) {
             try {
                 $currentPartE = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber -ErrorAction Stop
-                $currentPartE | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Confirm:$false -ErrorAction Stop | Out-Null
-                $formattedE = $true
-                break
+                $currentPartE | Get-Volume | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Force -Confirm:$false -ErrorAction Stop | Out-Null
+                $volE = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber | Get-Volume
+                if ($volE.FileSystem -match "NTFS") {
+                    $formattedE = $true
+                    break
+                }
             } catch { Start-Sleep -Seconds 3 }
         }
         if (-not $formattedE) { throw "Failed to format E" }
