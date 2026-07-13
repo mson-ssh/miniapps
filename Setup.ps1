@@ -150,7 +150,11 @@ function Install-NecessaryApps {
                         $success = $true
                         Write-Output "STATE:$Name:Done"
                     } else {
-                        $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                        if ([string]::IsNullOrWhiteSpace($ArgsStr)) {
+                            $proc = Start-Process -FilePath $tempExe -PassThru
+                        } else {
+                            $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                        }
                             
                         try {
                             $proc | Wait-Process -Timeout 180 -ErrorAction Stop
@@ -221,7 +225,11 @@ function Install-NecessaryApps {
                         if (-not $downloaded) { throw "Download failed" }
 
                         Write-Output "STATE:$Name:Installing"
-                        $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                        if ([string]::IsNullOrWhiteSpace($ArgsStr)) {
+                            $proc = Start-Process -FilePath $tempExe -PassThru
+                        } else {
+                            $proc = Start-Process -FilePath $tempExe -ArgumentList $ArgsStr -PassThru
+                        }
                         try {
                             $proc | Wait-Process -Timeout 180 -ErrorAction Stop
                             if ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335201) { $success = $true; Write-Output "STATE:$Name:Done" }
