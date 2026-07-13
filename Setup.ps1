@@ -113,7 +113,8 @@ function Install-NecessaryApps {
             $ProgressPreference = 'SilentlyContinue'
             $tempDir = "$env:TEMP\MiniAZ_Apps"
             if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
-            $tempExe = "$tempDir\$Name.exe"
+            $fileName = $Url.Split('/')[-1]
+            $tempExe = "$tempDir\$fileName"
             
             $success = $false
             if ($Method -eq 'Winget' -and $WingetId) {
