@@ -1,4 +1,4 @@
-﻿# Configure TLS 1.2 to prevent GitHub downloads from being blocked
+# Configure TLS 1.2 to prevent GitHub downloads from being blocked
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # =========================================================================
@@ -250,6 +250,11 @@ function Install-NecessaryApps {
     }
     Wait-Job $configJob, $diskJob | Out-Null
     Remove-Job $configJob, $diskJob | Out-Null
+    
+    # Garbage Collection: Dọn dẹp sạch sẽ 400MB file cài đặt
+    Write-Host "`n[System] Cleaning up temporary installation files..." -ForegroundColor Cyan
+    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    
     Write-Host "`n[Completed] The entire installation and setup process has finished!" -ForegroundColor Green
 }
 
