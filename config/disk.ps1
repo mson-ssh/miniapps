@@ -132,7 +132,10 @@ try {
     for ($i = 0; $i -lt 10; $i++) {
         try {
             $currentPart = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber -ErrorAction Stop
-            $currentPart | Get-Volume | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelD -Quick -Force -Confirm:$false -ErrorAction Stop | Out-Null
+            # Format-Volume has no -Quick parameter (quick format is the default);
+            # passing it throws at parameter binding and leaves the volume RAW.
+            Format-Volume -Partition $currentPart -FileSystem NTFS -NewFileSystemLabel $LabelD -Force -Confirm:$false -ErrorAction Stop | Out-Null
+            Update-HostStorageCache
             $vol = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partD.PartitionNumber | Get-Volume
             if ($vol.FileSystem -match "NTFS") {
                 $formattedD = $true
@@ -156,7 +159,8 @@ try {
         for ($i = 0; $i -lt 10; $i++) {
             try {
                 $currentPartE = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber -ErrorAction Stop
-                $currentPartE | Get-Volume | Format-Volume -FileSystem NTFS -NewFileSystemLabel $LabelE -Quick -Force -Confirm:$false -ErrorAction Stop | Out-Null
+                Format-Volume -Partition $currentPartE -FileSystem NTFS -NewFileSystemLabel $LabelE -Force -Confirm:$false -ErrorAction Stop | Out-Null
+                Update-HostStorageCache
                 $volE = Get-Partition -DiskNumber $osDisk.Number -PartitionNumber $partE.PartitionNumber | Get-Volume
                 if ($volE.FileSystem -match "NTFS") {
                     $formattedE = $true
