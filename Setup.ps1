@@ -402,6 +402,15 @@ $AppCatalog = @(
 # -1978335201 = already installed (winget/VC Redist)
 $SuccessExitCodes = @(0, 3010, -1978335201)
 
+# Apps sharing a serial group never install at the same time as each other;
+# everything else installs fully in parallel. Both VC Redist bundles wrap MSI
+# and contend for the Windows Installer _MSIExecute mutex, so running them
+# together fails with 1618. Order inside a group follows $AppCatalog order.
+$SerialGroups = @{
+    "VCRedist x64" = "vcredist"
+    "VCRedist x86" = "vcredist"
+}
+
 function Test-IsInstalled {
     param([string]$Pattern)
     if (-not $Pattern) { return $false }
@@ -501,9 +510,10 @@ function Install-NecessaryApps {
     $webClients    = @{}   # Name -> WebClient (disposed on completion)
     $installMode   = @{}   # Name -> 'Installer' | 'Winget'
     $fallbackUsed  = @{}   # Name -> $true once fallback was spent
-    $installQueue  = @()
+    $pending       = @()   # Names downloaded and waiting for a launch slot
+    $running       = @{}   # Name -> @{ Proc = <Process>; Deadline = <DateTime> }
 
-    Write-Host "`n[Progress] Downloading in parallel, installing sequentially..." -ForegroundColor Cyan
+    Write-Host "`n[Progress] Downloading and installing in parallel..." -ForegroundColor Cyan
     $startTop = [Console]::CursorTop
 
     $renderTable = {
@@ -524,7 +534,7 @@ function Install-NecessaryApps {
         elseif ($Method -eq 'Winget' -and $app.WingetId) {
             $appStates[$app.Name] = "Waiting to Install"
             $installMode[$app.Name] = 'Winget'
-            $installQueue += $app.Name
+            $pending += $app.Name
         }
         else {
             # Direct download. WebClient streams to disk instead of buffering in RAM.
@@ -538,11 +548,11 @@ function Install-NecessaryApps {
         Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(13), $appStates[$app.Name]) -ForegroundColor Yellow
     }
 
-    $currentApp = $null
-    $currentProc = $null
-    $installDeadline = $null
+    # Catalog order decides who goes first inside a serial group
+    $orderIndex = @{}
+    for ($i = 0; $i -lt $AppCatalog.Count; $i++) { $orderIndex[$AppCatalog[$i].Name] = $i }
 
-    while ($downloadTasks.Count -gt 0 -or $installQueue.Count -gt 0 -or $currentApp) {
+    while ($downloadTasks.Count -gt 0 -or $pending.Count -gt 0 -or $running.Count -gt 0) {
         $dirty = $false
 
         # --- 1. Harvest finished downloads ---
@@ -557,7 +567,7 @@ function Install-NecessaryApps {
                         $fallbackUsed[$key] = $true
                         $installMode[$key] = 'Winget'
                         $appStates[$key] = "Winget Fallback"
-                        $installQueue += $key
+                        $pending += $key
                     }
                     else {
                         $appStates[$key] = "Failed (Download)"
@@ -565,7 +575,7 @@ function Install-NecessaryApps {
                 }
                 else {
                     $appStates[$key] = "Waiting to Install"
-                    $installQueue += $key
+                    $pending += $key
                 }
                 $dirty = $true
             }
@@ -576,85 +586,97 @@ function Install-NecessaryApps {
             $webClients.Remove($key)
         }
 
-        # --- 2. Watch the running install ---
-        if ($currentApp) {
-            if (-not $currentProc) {
-                # Fire-and-forget launch (EVKey SFX) - nothing to wait on
-                $appStates[$currentApp] = "Done"
-                $currentApp = $null
-                $dirty = $true
-            }
-            elseif ($currentProc.HasExited) {
+        # --- 2. Watch every running install ---
+        foreach ($key in @($running.Keys)) {
+            $proc = $running[$key].Proc
+            $done = $false
+
+            if ($proc.HasExited) {
                 # A null ExitCode means Windows would not hand it back; the process
                 # did exit, so trust it rather than reporting a false failure.
-                $code = try { $currentProc.ExitCode } catch { $null }
+                $code = try { $proc.ExitCode } catch { $null }
                 if ($null -eq $code -or $SuccessExitCodes -contains $code) {
-                    $appStates[$currentApp] = "Done"
+                    $appStates[$key] = "Done"
                 }
                 else {
-                    $app = $AppCatalog | Where-Object { $_.Name -eq $currentApp }
-                    if ($wingetReady -and $app.WingetId -and -not $fallbackUsed[$currentApp]) {
-                        $fallbackUsed[$currentApp] = $true
-                        $installMode[$currentApp] = 'Winget'
-                        $appStates[$currentApp] = "Winget Fallback"
-                        $installQueue += $currentApp
+                    $app = $AppCatalog | Where-Object { $_.Name -eq $key }
+                    if ($wingetReady -and $app.WingetId -and -not $fallbackUsed[$key]) {
+                        $fallbackUsed[$key] = $true
+                        $installMode[$key] = 'Winget'
+                        $appStates[$key] = "Winget Fallback"
+                        $pending += $key
                     }
                     else {
-                        $appStates[$currentApp] = "Failed (ExitCode: $code)"
+                        $appStates[$key] = "Failed (ExitCode: $code)"
                     }
                 }
-                $currentApp = $null
-                $currentProc = $null
-                $dirty = $true
+                $done = $true
             }
-            elseif ($installDeadline -and (Get-Date) -gt $installDeadline) {
-                # Hung installer: kill it so the queue keeps moving
-                $currentProc | Stop-Process -Force -ErrorAction SilentlyContinue
-                $appStates[$currentApp] = "Failed (Timeout)"
-                $currentApp = $null
-                $currentProc = $null
+            elseif ((Get-Date) -gt $running[$key].Deadline) {
+                # Hung installer: kill it so its serial group is not blocked forever
+                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+                $appStates[$key] = "Failed (Timeout)"
+                $done = $true
+            }
+
+            if ($done) {
+                $running.Remove($key)
                 $dirty = $true
             }
         }
 
-        # --- 3. Start the next install from the queue ---
-        if (-not $currentApp -and $installQueue.Count -gt 0) {
-            $currentApp = $installQueue[0]
-            $installQueue = @($installQueue | Select-Object -Skip 1)
+        # --- 3. Launch whatever is ready, in parallel ---
+        # Sorted by catalog order so a serial group starts with its first member
+        # (VC Redist x64 before x86).
+        foreach ($key in @($pending | Sort-Object { $orderIndex[$_] })) {
+            # Hold back if another member of the same serial group is installing
+            $group = $SerialGroups[$key]
+            if ($group) {
+                $busy = @($running.Keys | Where-Object { $SerialGroups[$_] -eq $group })
+                if ($busy.Count -gt 0) {
+                    $appStates[$key] = "Waiting ($group busy)"
+                    continue
+                }
+            }
 
-            $app = $AppCatalog | Where-Object { $_.Name -eq $currentApp }
-            $appStates[$currentApp] = "Installing"
-            $installDeadline = (Get-Date).AddSeconds($app.TimeoutSec)
-            $currentProc = $null
+            $pending = @($pending | Where-Object { $_ -ne $key })
+            $app = $AppCatalog | Where-Object { $_.Name -eq $key }
+            $appStates[$key] = "Installing"
             $dirty = $true
 
             try {
-                if ($installMode[$currentApp] -eq 'Winget') {
+                $proc = $null
+                if ($installMode[$key] -eq 'Winget') {
                     $wingetArgs = "install --id $($app.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements"
                     # -WindowStyle Hidden, not -NoNewWindow: with -NoNewWindow the
                     # returned process object reports a null ExitCode even after exit.
-                    $currentProc = Start-Process winget -ArgumentList $wingetArgs -PassThru -WindowStyle Hidden
+                    $proc = Start-Process winget -ArgumentList $wingetArgs -PassThru -WindowStyle Hidden
                 }
-                elseif ($currentApp -eq "EVKey") {
-                    # WinRAR SFX: extracts to C:\EVKey and returns immediately
+                elseif ($key -eq "EVKey") {
+                    # WinRAR SFX: extracts to C:\EVKey and returns immediately,
+                    # so there is no process worth tracking
                     Start-Process -FilePath (Join-Path $tempDir ($app.Url.Split('/')[-1])) -ArgumentList $app.Args -WindowStyle Hidden
-                    Start-Sleep -Seconds 3
+                    $appStates[$key] = "Done"
                 }
                 elseif ([string]::IsNullOrWhiteSpace($app.Args)) {
                     # Interactive installer (Office) - surface its window to the user
-                    $currentProc = Start-Process -FilePath (Join-Path $tempDir ($app.Url.Split('/')[-1])) -PassThru
-                    Start-Sleep -Seconds 3
+                    $proc = Start-Process -FilePath (Join-Path $tempDir ($app.Url.Split('/')[-1])) -PassThru
                     $hwnd = [Win32UI]::FindWindow($null, "Microsoft Office")
                     if ($hwnd -ne [IntPtr]::Zero) { [Win32UI]::SetForegroundWindow($hwnd) | Out-Null }
                 }
                 else {
-                    $currentProc = Start-Process -FilePath (Join-Path $tempDir ($app.Url.Split('/')[-1])) -ArgumentList $app.Args -PassThru
+                    $proc = Start-Process -FilePath (Join-Path $tempDir ($app.Url.Split('/')[-1])) -ArgumentList $app.Args -PassThru
+                }
+
+                if ($proc) {
+                    $running[$key] = @{
+                        Proc     = $proc
+                        Deadline = (Get-Date).AddSeconds($app.TimeoutSec)
+                    }
                 }
             }
             catch {
-                $appStates[$currentApp] = "Failed (Launch)"
-                $currentApp = $null
-                $currentProc = $null
+                $appStates[$key] = "Failed (Launch)"
             }
         }
 

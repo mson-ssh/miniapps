@@ -49,22 +49,48 @@ Winget Fallback có khả dụng hay không.
 
 ### Giai đoạn 4: Engine tải & cài
 
-Đây là phần cốt lõi. Kiến trúc: **tải song song hoàn toàn, cài tuần tự qua hàng đợi.**
+Đây là phần cốt lõi. Kiến trúc: **tải song song, cài song song, trừ các nhóm serial.**
 
 ```
-Download (song song, N tasks)          Install (tuần tự, 1 tại một thời điểm)
-  WebClient.DownloadFileTaskAsync  ──►  $installQueue  ──►  Start-Process
+Download (song song, N tasks)              Install (song song)
+  WebClient.DownloadFileTaskAsync  ──►  $pending  ──►  $running (nhiều process cùng lúc)
+                                                  └──► nhóm serial: chờ anh em cùng nhóm xong
 ```
 
-Lý do tách: nhiều bộ cài chạy đồng thời sẽ tranh chấp Windows Installer service và registry.
-Tải thì ngược lại, càng song song càng nhanh. `WebClient` stream trực tiếp ra đĩa nên không
-phình RAM như `Invoke-WebRequest`.
+`WebClient` stream trực tiếp ra đĩa nên không phình RAM như `Invoke-WebRequest`. App nào tải
+xong là cài ngay, không chờ app khác.
 
 Vòng lặp `while` mỗi 200ms xử lý 3 việc:
 
-1. **Thu hoạch download xong** → vào `$installQueue`; nếu `IsFaulted` → thử Winget Fallback.
-2. **Theo dõi tiến trình đang cài** → kiểm tra `HasExited` + exit code, hoặc kill nếu quá timeout.
-3. **Lấy app tiếp theo từ hàng đợi** và khởi chạy.
+1. **Thu hoạch download xong** → vào `$pending`; nếu `IsFaulted` → thử Winget Fallback.
+2. **Theo dõi mọi tiến trình trong `$running`** → kiểm tra `HasExited` + exit code, hoặc kill
+   nếu quá timeout riêng của app đó.
+3. **Khởi chạy tất cả app trong `$pending`**, trừ app đang bị nhóm serial chặn.
+
+### Nhóm serial
+
+`$SerialGroups` map tên app → tên nhóm. Hai app cùng nhóm không bao giờ chạy đồng thời với
+nhau, nhưng vẫn song song với mọi app ngoài nhóm. Hiện chỉ có một nhóm `vcredist` gồm
+`VCRedist x64` và `VCRedist x86`: cả hai là Burn bundle bọc MSI, tranh chấp mutex
+`_MSIExecute` nên chạy cùng lúc sẽ lỗi 1618.
+
+Thứ tự trong nhóm theo thứ tự khai báo trong `$AppCatalog` (`$orderIndex`), nên x64 luôn trước
+x86. App bị chặn hiển thị `Waiting (<nhóm> busy)` và được thử lại mỗi nhịp.
+
+Khóa nhóm được nhả khi thành viên đang chạy kết thúc **hoặc bị kill vì timeout** — đã kiểm thử
+để một app treo không chặn vĩnh viễn app còn lại. Nếu một thành viên rơi vào Winget Fallback,
+nó chiếm lại khóa trong lúc chạy winget.
+
+Thêm nhóm mới chỉ cần một dòng, ví dụ hai app xung đột khác:
+
+```powershell
+$SerialGroups = @{
+    "VCRedist x64" = "vcredist"
+    "VCRedist x86" = "vcredist"
+    "App Foo"      = "foogroup"
+    "App Bar"      = "foogroup"
+}
+```
 
 UI chỉ vẽ lại khi có thay đổi trạng thái (`$dirty`), dùng `[Console]::SetCursorPosition` để
 cập nhật tại chỗ.
@@ -79,8 +105,10 @@ và Telegram (hai app này cài vào user profile, không ghi registry chuẩn),
 **Winget Fallback** — kích hoạt khi download fault hoặc installer trả exit code lỗi. Hashtable
 `$fallbackUsed` đảm bảo mỗi app chỉ fallback đúng một lần, tránh vòng lặp vô hạn.
 
-**Timeout riêng từng app** — khai báo qua `TimeoutSec` trong `$AppCatalog`. Silent installer 300s,
-Office 2024 1800s vì là bộ cài tương tác và tải nội dung từ CDN. Quá hạn thì `Stop-Process -Force`.
+**Timeout riêng từng app** — khai báo qua `TimeoutSec` trong `$AppCatalog`, mỗi process trong
+`$running` có deadline riêng. Silent installer 300s, Office 2024 1800s vì là bộ cài tương tác và
+tải nội dung từ CDN. Quá hạn thì `Stop-Process -Force`. Vì Office giờ cài song song, nó không còn
+chặn các app khác trong lúc anh bấm tay.
 
 **Exit code** — `$SuccessExitCodes = @(0, 3010, -1978335201)`: OK, cần reboot, đã cài sẵn.
 

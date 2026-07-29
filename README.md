@@ -22,8 +22,11 @@ thông tin phần cứng đã được nhúng sẵn bên trong.
   từng mục được in ra cuối cùng (kể cả khi thất bại), không im lặng bỏ qua.
 - **Smart Skip**: quét Registry (và cả thư mục AppData cho Zalo/Telegram). Phần mềm đã có sẵn
   sẽ được đánh dấu `Already Installed` và bỏ qua.
-- **Tải song song, cài tuần tự**: 11 gói được tải cùng lúc qua Direct Link (Cloudflare R2),
-  nhưng chỉ cài từng cái một để các bộ cài không tranh chấp Windows Installer.
+- **Tải và cài song song**: 11 gói tải cùng lúc qua Direct Link (Cloudflare R2), và cài ngay
+  khi tải xong — nhiều app cài đồng thời.
+- **Ngoại lệ tuần tự**: hai gói VC++ Redistributable x64/x86 không bao giờ cài cùng lúc với
+  nhau (cả hai bọc MSI, tranh chấp mutex `_MSIExecute` của Windows Installer nên báo lỗi 1618).
+  x64 chạy trước, x86 chờ. Chúng vẫn cài song song với mọi app khác.
 - **Winget Fallback**: nếu Direct Link chết hoặc bộ cài trả về exit code lỗi, app đó tự động
   được cài lại qua `winget` (mỗi app chỉ fallback một lần).
 - **Timeout riêng từng app**: 5 phút cho bộ cài silent, 30 phút cho Office 2024. Tiến trình kẹt
