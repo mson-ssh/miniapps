@@ -23,7 +23,7 @@ if (-not $isAdmin) {
     }
     else {
         # Running from memory (irm | iex): no way to read own source, so re-fetch
-        $tempScript = "$env:TEMP\MiniAZ_Setup_elevated.ps1"
+        $tempScript = "$env:TEMP\MiniApp\Setup_elevated.ps1"
         try {
             Invoke-WebRequest -Uri $SelfUrl -OutFile $tempScript -UseBasicParsing -ErrorAction Stop
             Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
@@ -437,7 +437,7 @@ function Initialize-Winget {
     }
 
     Write-Host "-> Winget not found. Starting silent Winget initialization..." -ForegroundColor Yellow
-    $tempDir = "$env:TEMP\winget-init"
+    $tempDir = "$env:TEMP\MiniApp"
     if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
 
     try {
@@ -448,7 +448,7 @@ function Initialize-Winget {
         Add-AppxPackage -Path "$tempDir\VCLibs.appx" -ErrorAction SilentlyContinue
         Add-AppxPackage -Path "$tempDir\UiXaml.appx" -ErrorAction SilentlyContinue
         Add-AppxPackage -Path "$tempDir\Winget.msixbundle" -ErrorAction SilentlyContinue
-        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item "$tempDir\VCLibs.appx", "$tempDir\UiXaml.appx", "$tempDir\Winget.msixbundle" -Force -ErrorAction SilentlyContinue
 
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             & winget settings --enable BypassCertificatePinningForMicrosoftStore --accept-source-agreements 2>&1 | Out-Null
@@ -460,7 +460,7 @@ function Initialize-Winget {
         return $false
     }
     catch {
-        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item "$tempDir\VCLibs.appx", "$tempDir\UiXaml.appx", "$tempDir\Winget.msixbundle" -Force -ErrorAction SilentlyContinue
         Write-Host "-> Winget initialization failed: $($_.Exception.Message)" -ForegroundColor Yellow
         return $false
     }
@@ -489,7 +489,7 @@ function Install-NecessaryApps {
         return
     }
 
-    $tempDir = "$env:TEMP\MiniAZ_Apps"
+    $tempDir = "$env:TEMP\MiniApp"
     if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
 
     # Win32 helper to pull interactive installers (Office) to the foreground
