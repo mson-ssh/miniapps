@@ -215,12 +215,22 @@ $DiskScript = {
                     Write-Output "[Disk] BitLocker active on C:, decrypting (this can take a while)..."
                     Disable-BitLocker -MountPoint C: -ErrorAction SilentlyContinue | Out-Null
                     manage-bde -off C: | Out-Null
-                    while ($true) {
+                    # Bounded wait: a stuck decryption must not hang the job (and
+                    # with it the Wait-Job at the end of the install run) forever.
+                    $bdeDeadline = (Get-Date).AddMinutes(60)
+                    $bdeDone = $false
+                    while ((Get-Date) -lt $bdeDeadline) {
                         $bdeStatus = (Get-BitLockerVolume -MountPoint C: -ErrorAction SilentlyContinue).VolumeStatus
-                        if (-not $bdeStatus -or $bdeStatus -eq 'FullyDecrypted') { break }
+                        if (-not $bdeStatus -or $bdeStatus -eq 'FullyDecrypted') { $bdeDone = $true; break }
                         Start-Sleep -Seconds 5
                     }
-                    Write-Output "[Disk] BitLocker decryption: OK"
+                    if ($bdeDone) {
+                        Write-Output "[Disk] BitLocker decryption: OK"
+                    }
+                    else {
+                        Write-Output "[Disk] ABORTED - BitLocker still decrypting after 60 min, partitioning skipped"
+                        return
+                    }
                 }
             }
         }
@@ -429,6 +439,31 @@ $AppCatalog = @(
 # -1978335201 = already installed (winget/VC Redist)
 $SuccessExitCodes = @(0, 3010, -1978335201)
 
+# Winget has its own "nothing to do" results that are NOT failures. Without
+# these, an app already present on the machine gets reported as failed.
+#   -1978335189 (0x8A15002B) no applicable update / already newest
+#   -1978335212 (0x8A150014) package already installed
+#   -1978335216 (0x8A150010) no applicable installer, already current
+#   -1978334972 (0x8A150104) another install in progress (retryable, not fatal)
+$WingetSuccessExitCodes = $SuccessExitCodes + @(
+    -1978335189, -1978335212, -1978335216
+)
+
+# Download resilience. Attempts are spent on the same direct link, never on a
+# different source, so every machine ends up with the same artifact.
+$Script:MaxDlTries = 3
+
+# WebClient exposes no Timeout property, and an async download against a
+# half-open connection never completes nor faults - the loop would spin forever.
+# So progress is watched instead: if the byte count does not move for this long,
+# the transfer is treated as dead and cancelled. Measuring stall rather than
+# total time keeps slow-but-alive downloads (Office on a weak line) safe.
+$Script:DlStallSec = 90
+
+# Upper bound on the Config/Disk background jobs. BitLocker decryption is the
+# slow one, and it has its own 60-minute cap inside $DiskScript.
+$Script:JobTimeoutSec = 3600
+
 # Apps sharing a serial group never install at the same time as each other;
 # everything else installs fully in parallel. Both VC Redist bundles wrap MSI
 # and contend for the Windows Installer _MSIExecute mutex, so running them
@@ -493,6 +528,42 @@ function Initialize-Winget {
     }
 }
 
+function Invoke-WingetRescue {
+    # Opt-in second pass for apps whose direct link exhausted its retries.
+    # Runs sequentially: rescues are rare and winget serializes internally.
+    param(
+        [Parameter(Mandatory)][object[]]$Apps,
+        [Parameter(Mandatory)][hashtable]$States
+    )
+
+    if (-not (Initialize-Winget)) {
+        Write-Host "  [!] Winget could not be initialized. Nothing was retried." -ForegroundColor Red
+        return
+    }
+
+    foreach ($app in $Apps) {
+        Write-Host ("  {0} Retrying {1} via Winget..." -f $Script:Glyph.Run, $app.Name) -ForegroundColor Cyan
+        $wingetArgs = "install --id $($app.WingetId) --exact --silent --disable-interactivity " +
+                      "--accept-package-agreements --accept-source-agreements"
+        try {
+            $proc = Start-Process winget -ArgumentList $wingetArgs -PassThru -WindowStyle Hidden -Wait
+            $code = try { $proc.ExitCode } catch { $null }
+            if ($null -eq $code -or $WingetSuccessExitCodes -contains $code) {
+                $States[$app.Name] = "Done (Winget)"
+                Write-Host ("  {0} {1} installed via Winget." -f $Script:Glyph.Ok, $app.Name) -ForegroundColor Green
+            }
+            else {
+                $States[$app.Name] = "Failed (Winget: $code)"
+                Write-Host ("  {0} {1} failed on Winget too (exit {2})." -f $Script:Glyph.Fail, $app.Name, $code) -ForegroundColor Red
+            }
+        }
+        catch {
+            $States[$app.Name] = "Failed (Winget launch)"
+            Write-Host ("  {0} Could not launch Winget for {1}." -f $Script:Glyph.Fail, $app.Name) -ForegroundColor Red
+        }
+    }
+}
+
 # =========================================================================
 # UI HELPERS - shared rendering primitives (glyphs, colors, boxes, bars)
 # =========================================================================
@@ -500,10 +571,10 @@ $Script:UiWidth = 60
 
 function Get-StatusColor {
     param([string]$State)
-    if ($State -like "Failed*")        { return "Red" }
-    if ($State -like "Done*")          { return "Green" }
-    if ($State -like "Already*")       { return "DarkGray" }
-    if ($State -like "*Fallback*")     { return "Magenta" }
+    if ($State -like "Failed*")   { return "Red" }
+    if ($State -like "Done*")     { return "Green" }
+    if ($State -like "Already*")  { return "DarkGray" }
+    if ($State -like "Retrying*" -or $State -like "Stalled*") { return "Magenta" }
     if ($State -like "Installing*" -or $State -like "Downloading*") { return "Cyan" }
     return "Yellow"
 }
@@ -513,7 +584,7 @@ function Get-StatusGlyph {
     if ($State -like "Failed*")   { return $Script:Glyph.Fail }
     if ($State -like "Done*")     { return $Script:Glyph.Ok }
     if ($State -like "Already*")  { return $Script:Glyph.Skip }
-    if ($State -like "Installing*" -or $State -like "*Fallback*") { return $Script:Glyph.Run }
+    if ($State -like "Installing*" -or $State -like "Retrying*") { return $Script:Glyph.Run }
     return $Script:Glyph.Wait
 }
 
@@ -555,14 +626,24 @@ function Install-NecessaryApps {
     $diskJob = Start-Job -ScriptBlock $DiskScript
     Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
 
-    $wingetReady = Initialize-Winget
-    if ($Method -eq 'Winget' -and -not $wingetReady) {
-        Write-Host "`n[ERROR] Winget is unavailable, so the Winget method cannot run." -ForegroundColor Red
-        Write-Host "        Use option 1 (Installer) instead." -ForegroundColor Yellow
-        Wait-Job $configJob, $diskJob | Out-Null
-        Receive-Job $configJob, $diskJob | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-        Remove-Job $configJob, $diskJob -Force | Out-Null
-        return
+    # Installer mode must not touch Winget: bootstrapping it would download
+    # ~200MB of appx and change the client machine without being asked. Winget
+    # is only initialized here for the explicit Winget option; Installer mode
+    # asks for consent later, and only if something actually failed.
+    $wingetReady = $false
+    if ($Method -eq 'Winget') {
+        $wingetReady = Initialize-Winget
+        if (-not $wingetReady) {
+            Write-Host "`n[ERROR] Winget is unavailable, so the Winget method cannot run." -ForegroundColor Red
+            Write-Host "        Use option 1 (Installer) instead." -ForegroundColor Yellow
+            Wait-Job $configJob, $diskJob -Timeout $Script:JobTimeoutSec | Out-Null
+            foreach ($j in @($configJob, $diskJob)) {
+                if ($j.State -eq 'Running') { Stop-Job -Job $j -ErrorAction SilentlyContinue }
+            }
+            Receive-Job $configJob, $diskJob | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+            Remove-Job $configJob, $diskJob -Force | Out-Null
+            return
+        }
     }
 
     $tempDir = "$env:TEMP\MiniApp"
@@ -585,10 +666,14 @@ function Install-NecessaryApps {
     $downloadTasks = @{}   # Name -> async download Task
     $webClients    = @{}   # Name -> WebClient (disposed on completion)
     $installMode   = @{}   # Name -> 'Installer' | 'Winget'
-    $fallbackUsed  = @{}   # Name -> $true once fallback was spent
     $pending       = @()   # Names downloaded and waiting for a launch slot
     $running       = @{}   # Name -> @{ Proc = <Process>; Deadline = <DateTime> }
-    $dlEvents      = @()   # Registered progress-event subscriptions to clean up
+    # ArrayList, not @(): $startDownload appends from a child scope, where
+    # "+=" on a plain array would silently write to a throwaway copy.
+    $dlEvents      = New-Object System.Collections.ArrayList
+    $dlTries       = @{}   # Name -> download attempts spent so far
+    $retryAt       = @{}   # Name -> earliest time to start the next attempt
+    $dlStall       = @{}   # Name -> @{ Bytes = <last seen>; Since = <DateTime> }
 
     # Shared across download progress-event handlers running on other threads
     $dlProgress = [hashtable]::Synchronized(@{})   # Name -> @{ Pct; Recv; Total }
@@ -625,6 +710,29 @@ function Install-NecessaryApps {
         Write-Host $summary.PadRight(58) -ForegroundColor White
     }
 
+    # Starts (or restarts) a direct download. A faulted WebClient cannot be
+    # reused, so every attempt builds a fresh client and event subscription.
+    $startDownload = {
+        param($app)
+        $tempExe = Join-Path $tempDir ($app.Url.Split('/')[-1])
+        $wc = New-Object System.Net.WebClient
+        $webClients[$app.Name] = $wc
+        $dlProgress[$app.Name] = @{ Pct = 0; Recv = 0; Total = 0 }
+        $ev = Register-ObjectEvent -InputObject $wc -EventName DownloadProgressChanged `
+            -MessageData @{ Table = $dlProgress; Name = $app.Name } -Action {
+                $d = $Event.MessageData
+                $d.Table[$d.Name] = @{
+                    Pct   = $EventArgs.ProgressPercentage
+                    Recv  = [math]::Round($EventArgs.BytesReceived / 1MB, 1)
+                    Total = [math]::Round($EventArgs.TotalBytesToReceive / 1MB, 1)
+                }
+            }
+        $null = $dlEvents.Add($ev)
+        $dlTries[$app.Name] = $dlTries[$app.Name] + 1
+        $dlStall[$app.Name] = @{ Bytes = -1; Since = (Get-Date) }
+        $downloadTasks[$app.Name] = $wc.DownloadFileTaskAsync($app.Url, $tempExe)
+    }
+
     foreach ($app in $AppCatalog) {
         if ($app.MatchName -and (Test-IsInstalled $app.MatchName)) {
             $appStates[$app.Name] = "Already Installed"
@@ -641,23 +749,8 @@ function Install-NecessaryApps {
             # Direct download. WebClient streams to disk instead of buffering in RAM.
             $appStates[$app.Name] = "Downloading"
             $installMode[$app.Name] = 'Installer'
-            $tempExe = Join-Path $tempDir ($app.Url.Split('/')[-1])
-            $wc = New-Object System.Net.WebClient
-            $webClients[$app.Name] = $wc
-
-            # Live download progress -> shared hashtable read by the render loop
-            $dlProgress[$app.Name] = @{ Pct = 0; Recv = 0; Total = 0 }
-            $ev = Register-ObjectEvent -InputObject $wc -EventName DownloadProgressChanged `
-                -MessageData @{ Table = $dlProgress; Name = $app.Name } -Action {
-                    $d = $Event.MessageData
-                    $d.Table[$d.Name] = @{
-                        Pct   = $EventArgs.ProgressPercentage
-                        Recv  = [math]::Round($EventArgs.BytesReceived / 1MB, 1)
-                        Total = [math]::Round($EventArgs.TotalBytesToReceive / 1MB, 1)
-                    }
-                }
-            $dlEvents += $ev
-            $downloadTasks[$app.Name] = $wc.DownloadFileTaskAsync($app.Url, $tempExe)
+            $dlTries[$app.Name] = 0
+            & $startDownload $app
         }
         Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(13), $appStates[$app.Name]) -ForegroundColor Yellow
     }
@@ -666,8 +759,31 @@ function Install-NecessaryApps {
     $orderIndex = @{}
     for ($i = 0; $i -lt $AppCatalog.Count; $i++) { $orderIndex[$AppCatalog[$i].Name] = $i }
 
-    while ($downloadTasks.Count -gt 0 -or $pending.Count -gt 0 -or $running.Count -gt 0) {
+    # $retryAt must be part of the condition: an app awaiting its backoff is in
+    # none of the other collections, so the loop would exit before it retries.
+    while ($downloadTasks.Count -gt 0 -or $pending.Count -gt 0 -or
+           $running.Count -gt 0 -or $retryAt.Count -gt 0) {
         $dirty = $false
+
+        # --- 0. Kill downloads that stopped moving ---
+        # CancelAsync makes the task transition to canceled, which the harvest
+        # step below already treats like a fault, so the retry path is reused.
+        foreach ($key in @($downloadTasks.Keys)) {
+            if ($downloadTasks[$key].IsCompleted) { continue }
+            $seen = if ($dlProgress[$key]) { $dlProgress[$key].Recv } else { 0 }
+            $st = $dlStall[$key]
+            if ($seen -ne $st.Bytes) {
+                # Progress moved: reset the stall clock
+                $st.Bytes = $seen
+                $st.Since = Get-Date
+            }
+            elseif (((Get-Date) - $st.Since).TotalSeconds -ge $Script:DlStallSec) {
+                $appStates[$key] = "Stalled - cancelling"
+                try { $webClients[$key].CancelAsync() } catch { }
+                $st.Since = Get-Date   # do not fire again while it unwinds
+                $dirty = $true
+            }
+        }
 
         # --- 1. Harvest finished downloads ---
         $finished = @()
@@ -675,13 +791,14 @@ function Install-NecessaryApps {
             if ($downloadTasks[$key].IsCompleted) {
                 $finished += $key
                 if ($downloadTasks[$key].IsFaulted -or $downloadTasks[$key].IsCanceled) {
-                    $app = $AppCatalog | Where-Object { $_.Name -eq $key }
-                    if ($wingetReady -and $app.WingetId -and -not $fallbackUsed[$key]) {
-                        # Direct link died: hand this app to Winget instead
-                        $fallbackUsed[$key] = $true
-                        $installMode[$key] = 'Winget'
-                        $appStates[$key] = "Winget Fallback"
-                        $pending += $key
+                    # Retry the same direct link. Most failures here are
+                    # transient (DNS hiccup, dropped connection), so retrying
+                    # the original source keeps every machine on the same
+                    # artifact instead of silently switching package managers.
+                    if ($dlTries[$key] -lt $Script:MaxDlTries) {
+                        $waitSec = 2 * $dlTries[$key]          # 2s, then 4s
+                        $retryAt[$key] = (Get-Date).AddSeconds($waitSec)
+                        $appStates[$key] = "Retrying ({0}/{1})" -f ($dlTries[$key] + 1), $Script:MaxDlTries
                     }
                     else {
                         $appStates[$key] = "Failed (Download)"
@@ -700,6 +817,16 @@ function Install-NecessaryApps {
             $webClients.Remove($key)
         }
 
+        # --- 1b. Fire off scheduled retries once their backoff has elapsed ---
+        foreach ($key in @($retryAt.Keys)) {
+            if ((Get-Date) -ge $retryAt[$key]) {
+                $retryAt.Remove($key)
+                $appStates[$key] = "Downloading"
+                & $startDownload ($AppCatalog | Where-Object { $_.Name -eq $key })
+                $dirty = $true
+            }
+        }
+
         # --- 2. Watch every running install ---
         foreach ($key in @($running.Keys)) {
             $proc = $running[$key].Proc
@@ -709,20 +836,17 @@ function Install-NecessaryApps {
                 # A null ExitCode means Windows would not hand it back; the process
                 # did exit, so trust it rather than reporting a false failure.
                 $code = try { $proc.ExitCode } catch { $null }
-                if ($null -eq $code -or $SuccessExitCodes -contains $code) {
+                # Winget reports "already installed" with its own codes, which are
+                # successes, not failures.
+                $okCodes = if ($installMode[$key] -eq 'Winget') { $WingetSuccessExitCodes }
+                           else { $SuccessExitCodes }
+                if ($null -eq $code -or $okCodes -contains $code) {
                     $appStates[$key] = "Done"
                 }
                 else {
-                    $app = $AppCatalog | Where-Object { $_.Name -eq $key }
-                    if ($wingetReady -and $app.WingetId -and -not $fallbackUsed[$key]) {
-                        $fallbackUsed[$key] = $true
-                        $installMode[$key] = 'Winget'
-                        $appStates[$key] = "Winget Fallback"
-                        $pending += $key
-                    }
-                    else {
-                        $appStates[$key] = "Failed (ExitCode: $code)"
-                    }
+                    # No automatic switch to Winget: a bad exit code is reported
+                    # as-is. The user is offered a Winget rescue pass afterwards.
+                    $appStates[$key] = "Failed (ExitCode: $code)"
                 }
                 $done = $true
             }
@@ -794,9 +918,11 @@ function Install-NecessaryApps {
             }
         }
 
-        # Re-render on state change, or on a repositionable console while any
-        # download is live so the percentage animates smoothly.
-        if ($dirty -or ($Script:CanReposition -and $downloadTasks.Count -gt 0)) { & $renderTable }
+        # Re-render on state change, or on a repositionable console whenever work
+        # is in flight, so the download percentage animates and the elapsed clock
+        # keeps ticking during a retry backoff (when nothing else is happening).
+        $inFlight = $downloadTasks.Count -gt 0 -or $retryAt.Count -gt 0 -or $running.Count -gt 0
+        if ($dirty -or ($Script:CanReposition -and $inFlight)) { & $renderTable }
         Start-Sleep -Milliseconds 200
     }
     & $renderTable
@@ -808,8 +934,16 @@ function Install-NecessaryApps {
     }
 
     # --- Wait for background jobs and report what they actually did ---
+    # Bounded: a wedged job (disk/BitLocker) must not strand the whole run.
     Write-Host "`n[System] Waiting for Config and Disk jobs to finish..." -ForegroundColor Cyan
-    Wait-Job $configJob, $diskJob | Out-Null
+    Wait-Job $configJob, $diskJob -Timeout $Script:JobTimeoutSec | Out-Null
+    foreach ($job in @($configJob, $diskJob)) {
+        if ($job.State -eq 'Running') {
+            Write-Host ("   [!] Job '{0}' still running after {1} min - stopping it." -f
+                $job.Name, [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        }
+    }
 
     Write-Host "`n[Background Results]" -ForegroundColor Cyan
     foreach ($job in @($configJob, $diskJob)) {
@@ -825,6 +959,55 @@ function Install-NecessaryApps {
         }
     }
     Remove-Job $configJob, $diskJob -Force | Out-Null
+
+    # --- Optional Winget rescue pass (Installer mode, opt-in) ---
+    # Nothing switches package managers without being asked. Only apps that
+    # failed AND have a WingetId can be rescued.
+    if ($Method -eq 'Installer') {
+        $rescuable = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Failed*" -and $_.WingetId })
+        $unrescuable = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Failed*" -and -not $_.WingetId })
+
+        if ($rescuable.Count -gt 0) {
+            Write-Host ""
+            Write-BoxTop
+            Write-BoxLine "  RETRY WITH WINGET?" "White"
+            Write-BoxSep
+            Write-BoxLine ("  {0} app(s) failed after {1} download attempts:" -f $rescuable.Count, $Script:MaxDlTries) "Yellow"
+            foreach ($r in $rescuable) { Write-BoxLine ("      - {0}" -f $r.Name) "Yellow" }
+            if ($unrescuable.Count -gt 0) {
+                Write-BoxSep
+                Write-BoxLine "  No Winget package, cannot retry:" "DarkGray"
+                foreach ($r in $unrescuable) { Write-BoxLine ("      - {0}" -f $r.Name) "DarkGray" }
+            }
+            Write-BoxSep
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                Write-BoxLine "  Winget is available on this machine." "Gray"
+            }
+            else {
+                Write-BoxLine "  Winget is NOT installed. Continuing will" "Yellow"
+                Write-BoxLine "  download and install it (~200MB)." "Yellow"
+            }
+            Write-BoxBottom
+
+            $answer = 'n'
+            if ($Script:CanReposition) {
+                Write-Host "`n  Retry these with Winget? [y/N] " -ForegroundColor Cyan -NoNewline
+                try { $answer = [System.Console]::ReadKey($true).KeyChar } catch { $answer = 'n' }
+                Write-Host $answer
+            }
+            else {
+                # Non-interactive (piped/redirected): never prompt, never assume yes
+                Write-Host "`n  Non-interactive session - skipping Winget retry." -ForegroundColor DarkGray
+            }
+
+            if ("$answer" -match '^[yY]$') {
+                Invoke-WingetRescue -Apps $rescuable -States $appStates
+            }
+            else {
+                Write-Host "  Skipped. Direct-link installers were left as-is." -ForegroundColor DarkGray
+            }
+        }
+    }
 
     # --- Reclaim the ~400MB of installers ---
     Write-Host "`n[System] Cleaning up temporary installation files..." -ForegroundColor Cyan

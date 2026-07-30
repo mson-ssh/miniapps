@@ -27,8 +27,10 @@ thông tin phần cứng đã được nhúng sẵn bên trong.
 - **Ngoại lệ tuần tự**: hai gói VC++ Redistributable x64/x86 không bao giờ cài cùng lúc với
   nhau (cả hai bọc MSI, tranh chấp mutex `_MSIExecute` của Windows Installer nên báo lỗi 1618).
   x64 chạy trước, x86 chờ. Chúng vẫn cài song song với mọi app khác.
-- **Winget Fallback**: nếu Direct Link chết hoặc bộ cài trả về exit code lỗi, app đó tự động
-  được cài lại qua `winget` (mỗi app chỉ fallback một lần).
+- **Thử lại cùng nguồn**: link tải chết hoặc treo (canh đình trệ 90s) thì thử lại chính link đó
+  tối đa 3 lần trước khi báo lỗi. Không tự đổi sang winget — mọi máy nhận cùng một bản cài.
+- **Rescue winget tùy chọn**: cuối lượt, nếu còn app lỗi mà có Winget ID, script *hỏi* có muốn
+  thử lại qua winget không. Mặc định Không. Máy chưa có winget sẽ được báo trước cái giá ~200MB.
 - **Giao diện tự thích ứng**: bảng tiến trình có ký hiệu và màu theo trạng thái, % tải trực tiếp,
   thanh tiến trình tổng và thẻ tổng kết cuối. Terminal hiện đại dùng ký tự Unicode, console cũ tự
   hạ cấp sang ASCII. Ghi log phiên ra `Desktop\MiniApp-log.txt`.

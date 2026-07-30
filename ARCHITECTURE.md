@@ -41,11 +41,12 @@ Script kiểm tra `WindowsBuiltInRole::Administrator`. Nếu chưa có quyền:
 `[Config] <mục>: OK|FAILED` / `[Disk] ...`, được `Receive-Job` thu lại và in ra cuối quá trình.
 Job crash cũng được bắt và in lý do. Không có lỗi nào bị ẩn.
 
-### Giai đoạn 3: Khởi tạo Winget
+### Giai đoạn 3: Khởi tạo Winget (chỉ khi chọn menu Winget)
 
 `Initialize-Winget` cài Winget nếu thiếu (VCLibs + UI.Xaml + DesktopAppInstaller), bật
-`BypassCertificatePinningForMicrosoftStore`. Trả về `$true/$false` — giá trị này quyết định
-Winget Fallback có khả dụng hay không.
+`BypassCertificatePinningForMicrosoftStore`. **Chỉ được gọi khi `$Method = 'Winget'`.** Chế độ
+Installer tuyệt đối không đụng tới Winget — dựng Winget sẽ tải ~200MB appx và thay đổi máy khách
+mà không được hỏi. Nếu chọn Winget mà máy không dựng được, menu báo lỗi và thoát.
 
 ### Giai đoạn 4: Engine tải & cài
 
@@ -60,12 +61,22 @@ Download (song song, N tasks)              Install (song song)
 `WebClient` stream trực tiếp ra đĩa nên không phình RAM như `Invoke-WebRequest`. App nào tải
 xong là cài ngay, không chờ app khác.
 
-Vòng lặp `while` mỗi 200ms xử lý 3 việc:
+Vòng lặp `while` mỗi 200ms xử lý 4 việc:
 
-1. **Thu hoạch download xong** → vào `$pending`; nếu `IsFaulted` → thử Winget Fallback.
+0. **Canh đình trệ** → `WebClient` không có thuộc tính `Timeout`, và download qua kết nối
+   half-open sẽ không bao giờ hoàn tất cũng không fault. Nên byte nhận được được theo dõi: nếu
+   đứng yên quá `$DlStallSec` (90s) thì `CancelAsync` → task chuyển sang faulted → vào đường retry.
+1. **Thu hoạch download xong** → vào `$pending`; nếu `IsFaulted`/`IsCanceled` → thử lại **chính
+   link đó** (`$MaxDlTries` = 3 lần, backoff 0s→2s→4s), hết lượt thì `Failed (Download)`. Không
+   tự chuyển sang winget — mọi máy nhận cùng một artifact.
 2. **Theo dõi mọi tiến trình trong `$running`** → kiểm tra `HasExited` + exit code, hoặc kill
-   nếu quá timeout riêng của app đó.
+   nếu quá timeout riêng của app đó. Exit code lỗi báo nguyên trạng, không fallback.
 3. **Khởi chạy tất cả app trong `$pending`**, trừ app đang bị nhóm serial chặn.
+
+Sau vòng lặp, chế độ Installer đề nghị **rescue pass tùy chọn**: các app failed *và* có `WingetId`
+được liệt kê, hỏi `y/N` trước khi thử winget. Mặc định No; phiên non-interactive không bao giờ
+hỏi cũng không tự đồng ý. Đây là chỗ duy nhất Installer mode có thể động tới winget, và chỉ khi
+người dùng chủ động đồng ý.
 
 ### Nhóm serial
 
@@ -78,8 +89,7 @@ Thứ tự trong nhóm theo thứ tự khai báo trong `$AppCatalog` (`$orderInd
 x86. App bị chặn hiển thị `Waiting (<nhóm> busy)` và được thử lại mỗi nhịp.
 
 Khóa nhóm được nhả khi thành viên đang chạy kết thúc **hoặc bị kill vì timeout** — đã kiểm thử
-để một app treo không chặn vĩnh viễn app còn lại. Nếu một thành viên rơi vào Winget Fallback,
-nó chiếm lại khóa trong lúc chạy winget.
+để một app treo không chặn vĩnh viễn app còn lại.
 
 Thêm nhóm mới chỉ cần một dòng, ví dụ hai app xung đột khác:
 
@@ -124,15 +134,26 @@ chuyển hướng không ghi được).
 **Smart Skip** — quét 3 nhánh registry Uninstall, cộng thêm kiểm tra trực tiếp thư mục cho Zalo
 và Telegram (hai app này cài vào user profile, không ghi registry chuẩn), và `C:\EVKey` cho EVKey.
 
-**Winget Fallback** — kích hoạt khi download fault hoặc installer trả exit code lỗi. Hashtable
-`$fallbackUsed` đảm bảo mỗi app chỉ fallback đúng một lần, tránh vòng lặp vô hạn.
+**Retry cùng nguồn** — download fault/cancel thì thử lại chính link đó tối đa `$MaxDlTries` (3)
+lần, backoff 0s→2s→4s (`$retryAt`). Không bao giờ đổi sang nguồn khác giữa chừng, nên mọi máy
+nhận đúng một artifact và lỗi hạ tầng (link R2 chết) hiện ra thay vì bị winget che.
+
+**Canh đình trệ download** — `$DlStallSec` (90s). Vì `WebClient` không có timeout và kết nối
+half-open treo vô hạn, byte nhận được được theo dõi mỗi nhịp; đứng yên quá ngưỡng thì `CancelAsync`
+→ vào retry. Đo đình trệ chứ không đo tổng thời gian, nên Office 4GB trên mạng yếu vẫn an toàn.
 
 **Timeout riêng từng app** — khai báo qua `TimeoutSec` trong `$AppCatalog`, mỗi process trong
 `$running` có deadline riêng. Silent installer 300s, Office 2024 1800s vì là bộ cài tương tác và
 tải nội dung từ CDN. Quá hạn thì `Stop-Process -Force`. Vì Office giờ cài song song, nó không còn
 chặn các app khác trong lúc anh bấm tay.
 
+**Job có giới hạn** — `Wait-Job -Timeout $JobTimeoutSec` (3600s); job còn chạy thì `Stop-Job`.
+Vòng chờ giải mã BitLocker trong `$DiskScript` cũng có mốc 60 phút, quá hạn thì bỏ qua phân vùng.
+Cả hai chặn kịch bản một job kẹt làm treo toàn bộ phiên cài.
+
 **Exit code** — `$SuccessExitCodes = @(0, 3010, -1978335201)`: OK, cần reboot, đã cài sẵn.
+Riêng winget dùng `$WingetSuccessExitCodes` bổ sung các mã "đã cài sẵn / không có bản áp dụng"
+(`-1978335189`, `-1978335212`, `-1978335216`) để app đã có sẵn không bị báo nhầm là lỗi.
 
 Một điểm cần biết: `Start-Process -PassThru -NoNewWindow` trả về process object có `ExitCode`
 là **null** ngay cả khi `HasExited` là true. Vì vậy nhánh winget dùng `-WindowStyle Hidden`
@@ -156,7 +177,7 @@ Thêm/sửa/xóa phần mềm chỉ cần một dòng trong `$AppCatalog`:
 @{
    Name       = "Tên hiển thị"      # dùng làm key trạng thái, giữ ngắn (<= 13 ký tự cho vừa bảng)
    Url        = "Direct link"       # tên file lấy từ segment cuối của URL
-   WingetId   = "Winget.Package.Id" # để trống nếu không có -> mất khả năng fallback
+   WingetId   = "Winget.Package.Id" # để trống -> không thể rescue qua winget khi link lỗi
    Args       = "/S"                # để trống -> chạy chế độ tương tác, tự đưa cửa sổ lên trước
    MatchName  = "Regex Registry"    # để trống -> luôn cài, không Smart Skip
    TimeoutSec = 300                 # giới hạn thời gian cài
@@ -167,6 +188,8 @@ Lưu ý: `Name = "EVKey"` có xử lý đặc biệt (SFX WinRAR, chạy hidden 
 process).
 
 ---
-*Cập nhật 27/07/2026 — toàn bộ nhánh của engine đã được kiểm thử bằng catalog giả:
-thành công, download fault → fallback, exit code lỗi → fallback, timeout → kill, smart skip,
-bộ cài tương tác, và nhánh fire-and-forget của EVKey.*
+*Cập nhật 30/07/2026 (v2) — toàn bộ nhánh của engine đã được kiểm thử bằng catalog giả:
+thành công, download fault → retry cùng link → Failed, download treo → canh đình trệ → cancel →
+retry, exit code lỗi báo nguyên trạng (không fallback), rescue winget tùy chọn có xác nhận, mã
+"đã cài sẵn" của winget tính là thành công, job kẹt bị Stop-Job đúng hạn, timeout → kill, smart
+skip, bộ cài tương tác, và nhánh fire-and-forget của EVKey.*
