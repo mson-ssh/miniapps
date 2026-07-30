@@ -97,6 +97,28 @@ cập nhật tại chỗ.
 
 ---
 
+## 2b. Tầng giao diện
+
+Đặt ở đầu script (trước cả khối UAC) để mọi thông báo, kể cả lỗi elevate, đều render đúng.
+
+**Tự phát hiện khả năng terminal** — `$Script:CanReposition = -not [Console]::IsOutputRedirected`.
+Khi output bị pipe hoặc redirect thì không có console buffer, `SetCursorPosition` sẽ ném "handle is
+invalid". Mọi lần đặt lại con trỏ đi qua `Set-CursorTop` có guard, nên chạy được cả khi
+`Setup.ps1 > log.txt`.
+
+**Bộ ký tự hai tầng** — `$Script:Glyph`. Terminal thật dùng Unicode (`✔ ✗ ⊘ ● █ ╭─╮`), console cũ
+hoặc redirect tự hạ cấp sang ASCII (`[OK] [X] [-] * # +-+`). Trạng thái luôn có **cả** ký hiệu và
+màu, không bao giờ chỉ dựa vào màu — để người mù màu vẫn đọc được.
+
+**Tiến trình tải** — `Register-ObjectEvent` trên `DownloadProgressChanged` của mỗi WebClient, ghi
+vào hashtable `[hashtable]::Synchronized(@{})` vì handler chạy trên thread khác. Vòng render đọc ra
+hiện `Downloading 45% 12MB/27MB`. Subscription được `Unregister-Event` sau khi engine xong.
+
+**Transcript** — `Desktop\MiniApp-log.txt`, nằm ngoài `%TEMP%\MiniApp` nên không bị bước dọn xóa
+mất. `$Script:LogPath` chỉ được set khi `Start-Transcript` thành công thật, nên giao diện không bao
+giờ trỏ tới file không tồn tại (trường hợp policy chặn transcription hoặc Desktop bị OneDrive
+chuyển hướng không ghi được).
+
 ## 3. Các cơ chế an toàn
 
 **Smart Skip** — quét 3 nhánh registry Uninstall, cộng thêm kiểm tra trực tiếp thư mục cho Zalo

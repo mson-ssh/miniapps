@@ -13,6 +13,30 @@ $ProgressPreference = 'SilentlyContinue'
 $SelfUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1"
 
 # =========================================================================
+# UI FOUNDATION - encoding, terminal capability detection, glyph set
+# Set first so even elevation errors render correctly.
+# =========================================================================
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
+# When output is piped/redirected there is no console buffer, so
+# SetCursorPosition throws "handle is invalid". Detect once, guard everywhere.
+$Script:CanReposition = $false
+try { $Script:CanReposition = -not [Console]::IsOutputRedirected } catch { }
+
+# Use rich glyphs only when the console can also reposition (a real terminal);
+# otherwise fall back to plain ASCII that renders anywhere.
+$Script:Glyph = if ($Script:CanReposition) {
+    @{ Ok = "$([char]0x2714)"; Fail = "$([char]0x2717)"; Skip = "$([char]0x2298)"; Run = "$([char]0x25CF)"
+       Wait = "$([char]0x25CB)"; Full = "$([char]0x2588)"; Empty = "$([char]0x2591)"
+       H = "$([char]0x2500)"; V = "$([char]0x2502)"
+       TL = "$([char]0x256D)"; TR = "$([char]0x256E)"; BL = "$([char]0x2570)"; BR = "$([char]0x256F)" }
+} else {
+    @{ Ok = "[OK]"; Fail = "[X]"; Skip = "[-]"; Run = "*"; Wait = "."; Full = "#"; Empty = "."
+       H = "-"; V = "|"; TL = "+"; TR = "+"; BL = "+"; BR = "+" }
+}
+
+# =========================================================================
 # AUTO-ELEVATE TO ADMINISTRATOR (UAC PROMPT)
 # =========================================================================
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -25,6 +49,9 @@ if (-not $isAdmin) {
         # Running from memory (irm | iex): no way to read own source, so re-fetch
         $tempScript = "$env:TEMP\MiniApp\Setup_elevated.ps1"
         try {
+            # -OutFile does not create parent dirs; MiniApp does not exist yet here
+            $parent = Split-Path $tempScript -Parent
+            if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
             Invoke-WebRequest -Uri $SelfUrl -OutFile $tempScript -UseBasicParsing -ErrorAction Stop
             Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
         }
@@ -467,6 +494,55 @@ function Initialize-Winget {
 }
 
 # =========================================================================
+# UI HELPERS - shared rendering primitives (glyphs, colors, boxes, bars)
+# =========================================================================
+$Script:UiWidth = 60
+
+function Get-StatusColor {
+    param([string]$State)
+    if ($State -like "Failed*")        { return "Red" }
+    if ($State -like "Done*")          { return "Green" }
+    if ($State -like "Already*")       { return "DarkGray" }
+    if ($State -like "*Fallback*")     { return "Magenta" }
+    if ($State -like "Installing*" -or $State -like "Downloading*") { return "Cyan" }
+    return "Yellow"
+}
+
+function Get-StatusGlyph {
+    param([string]$State)
+    if ($State -like "Failed*")   { return $Script:Glyph.Fail }
+    if ($State -like "Done*")     { return $Script:Glyph.Ok }
+    if ($State -like "Already*")  { return $Script:Glyph.Skip }
+    if ($State -like "Installing*" -or $State -like "*Fallback*") { return $Script:Glyph.Run }
+    return $Script:Glyph.Wait
+}
+
+function Get-ProgressBar {
+    param([int]$Percent, [int]$Width = 22)
+    if ($Percent -lt 0) { $Percent = 0 } elseif ($Percent -gt 100) { $Percent = 100 }
+    $filled = [int][math]::Round($Width * $Percent / 100)
+    return ($Script:Glyph.Full * $filled) + ($Script:Glyph.Empty * ($Width - $filled))
+}
+
+function Write-BoxLine {
+    # A single framed line, padded to the box interior width
+    param([string]$Text = "", [string]$Color = "Gray")
+    $inner = $Script:UiWidth - 2
+    if ($Text.Length -gt $inner) { $Text = $Text.Substring(0, $inner) }
+    Write-Host ("{0}{1}{0}" -f $Script:Glyph.V, $Text.PadRight($inner)) -ForegroundColor $Color
+}
+
+function Write-BoxTop    { Write-Host ($Script:Glyph.TL + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.TR) -ForegroundColor Cyan }
+function Write-BoxBottom { Write-Host ($Script:Glyph.BL + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.BR) -ForegroundColor Cyan }
+function Write-BoxSep    { Write-Host ($Script:Glyph.V + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.V) -ForegroundColor DarkCyan }
+
+function Set-CursorTop {
+    # Reposition only when a real console buffer exists
+    param([int]$Top)
+    if ($Script:CanReposition) { try { [Console]::SetCursorPosition(0, $Top) } catch { } }
+}
+
+# =========================================================================
 # MAIN INSTALL ENGINE
 # Downloads run fully in parallel; installs run one at a time from a queue
 # so concurrent installers never fight over the Windows Installer service.
@@ -512,16 +588,41 @@ function Install-NecessaryApps {
     $fallbackUsed  = @{}   # Name -> $true once fallback was spent
     $pending       = @()   # Names downloaded and waiting for a launch slot
     $running       = @{}   # Name -> @{ Proc = <Process>; Deadline = <DateTime> }
+    $dlEvents      = @()   # Registered progress-event subscriptions to clean up
 
-    Write-Host "`n[Progress] Downloading and installing in parallel..." -ForegroundColor Cyan
-    $startTop = [Console]::CursorTop
+    # Shared across download progress-event handlers running on other threads
+    $dlProgress = [hashtable]::Synchronized(@{})   # Name -> @{ Pct; Recv; Total }
+
+    $overallStart = Get-Date
+    Write-Host ""
+    $startTop = if ($Script:CanReposition) { [Console]::CursorTop } else { 0 }
 
     $renderTable = {
-        try { [Console]::SetCursorPosition(0, $startTop) } catch { }
+        Set-CursorTop $startTop
+        $done = 0; $fail = 0
         foreach ($a in $AppCatalog) {
-            $line = "   [+] {0} - {1}" -f $a.Name.PadRight(13), $appStates[$a.Name]
-            Write-Host $line.PadRight(78) -ForegroundColor Yellow
+            $state = $appStates[$a.Name]
+            if ($state -like "Done*" -or $state -like "Already*") { $done++ }
+            if ($state -like "Failed*") { $fail++ }
+
+            $detail = $state
+            if ($state -like "Downloading*" -and $dlProgress[$a.Name]) {
+                $p = $dlProgress[$a.Name]
+                $detail = "Downloading {0,3}%  {1}MB / {2}MB" -f $p.Pct, $p.Recv, $p.Total
+            }
+            $glyph = Get-StatusGlyph $state
+            $color = Get-StatusColor $state
+            $line = "  {0} {1}  {2}" -f $glyph, $a.Name.PadRight(14), $detail
+            Write-Host $line.PadRight(58) -ForegroundColor $color
         }
+        # Overall progress line
+        $total = $AppCatalog.Count
+        $pct = if ($total) { [int](($done + $fail) * 100 / $total) } else { 0 }
+        $elapsed = (Get-Date) - $overallStart
+        $bar = Get-ProgressBar -Percent $pct -Width 22
+        $failTxt = if ($fail -gt 0) { "$fail failed" } else { "0 failed" }
+        $summary = "  {0} {1}/{2}  {3}  {4:mm\:ss}" -f $bar, ($done + $fail), $total, $failTxt, $elapsed
+        Write-Host $summary.PadRight(58) -ForegroundColor White
     }
 
     foreach ($app in $AppCatalog) {
@@ -543,6 +644,19 @@ function Install-NecessaryApps {
             $tempExe = Join-Path $tempDir ($app.Url.Split('/')[-1])
             $wc = New-Object System.Net.WebClient
             $webClients[$app.Name] = $wc
+
+            # Live download progress -> shared hashtable read by the render loop
+            $dlProgress[$app.Name] = @{ Pct = 0; Recv = 0; Total = 0 }
+            $ev = Register-ObjectEvent -InputObject $wc -EventName DownloadProgressChanged `
+                -MessageData @{ Table = $dlProgress; Name = $app.Name } -Action {
+                    $d = $Event.MessageData
+                    $d.Table[$d.Name] = @{
+                        Pct   = $EventArgs.ProgressPercentage
+                        Recv  = [math]::Round($EventArgs.BytesReceived / 1MB, 1)
+                        Total = [math]::Round($EventArgs.TotalBytesToReceive / 1MB, 1)
+                    }
+                }
+            $dlEvents += $ev
             $downloadTasks[$app.Name] = $wc.DownloadFileTaskAsync($app.Url, $tempExe)
         }
         Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(13), $appStates[$app.Name]) -ForegroundColor Yellow
@@ -680,10 +794,18 @@ function Install-NecessaryApps {
             }
         }
 
-        if ($dirty) { & $renderTable }
+        # Re-render on state change, or on a repositionable console while any
+        # download is live so the percentage animates smoothly.
+        if ($dirty -or ($Script:CanReposition -and $downloadTasks.Count -gt 0)) { & $renderTable }
         Start-Sleep -Milliseconds 200
     }
     & $renderTable
+
+    # Tear down the download progress-event subscriptions
+    foreach ($ev in $dlEvents) {
+        Unregister-Event -SourceIdentifier $ev.Name -ErrorAction SilentlyContinue
+        Remove-Job -Id $ev.Id -Force -ErrorAction SilentlyContinue
+    }
 
     # --- Wait for background jobs and report what they actually did ---
     Write-Host "`n[System] Waiting for Config and Disk jobs to finish..." -ForegroundColor Cyan
@@ -708,12 +830,36 @@ function Install-NecessaryApps {
     Write-Host "`n[System] Cleaning up temporary installation files..." -ForegroundColor Cyan
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 
-    $failed = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Failed*" })
+    # --- Summary card ---
+    $installed = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Done*" })
+    $skipped   = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Already*" })
+    $failed    = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Failed*" })
+    $elapsed   = (Get-Date) - $overallStart
+
+    Write-Host ""
+    Write-BoxTop
+    Write-BoxLine "  SUMMARY" "White"
+    Write-BoxSep
+    Write-BoxLine ("  {0} Installed : {1}" -f $Script:Glyph.Ok,   $installed.Count) "Green"
+    Write-BoxLine ("  {0} Skipped   : {1}" -f $Script:Glyph.Skip, $skipped.Count)   "DarkGray"
+    Write-BoxLine ("  {0} Failed    : {1}" -f $Script:Glyph.Fail, $failed.Count) $(if ($failed.Count) { "Red" } else { "Green" })
+    foreach ($f in $failed) {
+        Write-BoxLine ("      - {0}: {1}" -f $f.Name, $appStates[$f.Name]) "Red"
+    }
+    Write-BoxSep
+    Write-BoxLine ("  Elapsed : {0:mm\:ss}" -f $elapsed) "Gray"
+    # Only claim a log exists when the transcript actually started. Filename
+    # only: full paths overflow the box when Desktop is redirected.
+    if ($Script:LogPath) {
+        Write-BoxLine ("  Log     : {0} (on Desktop)" -f (Split-Path $Script:LogPath -Leaf)) "Gray"
+    }
+    Write-BoxBottom
+
     if ($failed.Count -gt 0) {
-        Write-Host "`n[Completed with warnings] $($failed.Count) app(s) failed: $($failed.Name -join ', ')" -ForegroundColor Yellow
+        Write-Host "`n[!] Finished with warnings. Re-run this option to retry failed apps." -ForegroundColor Yellow
     }
     else {
-        Write-Host "`n[Completed] The entire installation and setup process has finished!" -ForegroundColor Green
+        Write-Host "`n[+] All apps installed and system setup complete." -ForegroundColor Green
     }
 }
 
@@ -775,40 +921,54 @@ function Invoke-Debloatware {
 # INTERACTIVE MENU UI
 # =========================================================================
 $MenuOptions = @(
-    "1. Install App with Installer",
-    "2. Install App with Winget",
-    "3. Information",
-    "4. Debloatware Windows",
-    "5. Exit"
+    @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel" },
+    @{ Label = "Install Apps (Winget)";    Desc = "Install via Windows Package Manager" },
+    @{ Label = "System Information";        Desc = "Export hardware report to Desktop" },
+    @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
+    @{ Label = "Exit";                      Desc = "Close the tool" }
 )
 
+function Get-MenuContext {
+    # One-line machine context shown in the header
+    $os = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption -replace 'Microsoft ', ''
+    $cFree = try { [math]::Round((Get-Volume -DriveLetter C -ErrorAction Stop).SizeRemaining / 1GB) } catch { "?" }
+    $net = try { if (Test-Connection 1.1.1.1 -Count 1 -Quiet -ErrorAction SilentlyContinue) { "Online" } else { "Offline" } } catch { "?" }
+    return @{ Host = $env:COMPUTERNAME; OS = $os; CFree = $cFree; Net = $net }
+}
+
 function Show-Menu {
-    param([int]$SelectedIndex)
+    param([int]$SelectedIndex, [hashtable]$Ctx)
 
     Clear-Host
-    Write-Host "==========================================================" -ForegroundColor Cyan
-    Write-Host "                        MINI-APPS                         " -ForegroundColor White -BackgroundColor DarkBlue
-    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-BoxTop
+    Write-BoxLine "  MINIAPP  -  Windows Setup Tool" "White"
+    Write-BoxSep
+    Write-BoxLine ("  Host: {0}   C: {1}GB free   Net: {2}" -f $Ctx.Host, $Ctx.CFree, $Ctx.Net) "DarkGray"
+    Write-BoxLine ("  {0}" -f $Ctx.OS) "DarkGray"
+    Write-BoxBottom
     Write-Host ""
 
     for ($i = 0; $i -lt $MenuOptions.Count; $i++) {
+        $num = $i + 1
         if ($i -eq $SelectedIndex) {
-            Write-Host "  > $($MenuOptions[$i]) " -ForegroundColor Black -BackgroundColor Cyan
+            Write-Host ("  {0} {1}. {2}" -f $Script:Glyph.Run, $num, $MenuOptions[$i].Label.PadRight(28)) -ForegroundColor Black -BackgroundColor Cyan
+            Write-Host ("       {0}" -f $MenuOptions[$i].Desc) -ForegroundColor DarkGray
         }
         else {
-            Write-Host "    $($MenuOptions[$i]) " -ForegroundColor White
+            Write-Host ("    {0}. {1}" -f $num, $MenuOptions[$i].Label) -ForegroundColor White
         }
     }
     Write-Host ""
-    Write-Host "  Use Up/Down + Enter, or press a number key." -ForegroundColor DarkGray
+    Write-Host "  Up/Down + Enter, or press a number key." -ForegroundColor DarkGray
 }
 
 function Read-MenuChoice {
     $selectedIndex = 0
     $count = $MenuOptions.Count
+    $ctx = Get-MenuContext
 
     while ($true) {
-        Show-Menu -SelectedIndex $selectedIndex
+        Show-Menu -SelectedIndex $selectedIndex -Ctx $ctx
         $key = [System.Console]::ReadKey($true).Key
 
         switch ($key) {
@@ -833,6 +993,19 @@ function Read-MenuChoice {
 # =========================================================================
 # MAIN LOOP
 # =========================================================================
+# Session transcript lives on the Desktop (outside %TEMP%\MiniApp so it
+# survives the post-install cleanup) for later troubleshooting. LogPath stays
+# empty if transcription fails, so the UI never points at a file that is absent.
+$Script:LogPath = ""
+try {
+    $wantLog = Join-Path ([Environment]::GetFolderPath('Desktop')) "MiniApp-log.txt"
+    Start-Transcript -Path $wantLog -Append -ErrorAction Stop | Out-Null
+    $Script:LogPath = $wantLog
+}
+catch {
+    Write-Host "[WARN] Could not start session log: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 while ($true) {
     $choice = Read-MenuChoice
     Clear-Host
@@ -844,6 +1017,7 @@ while ($true) {
         3 { Invoke-Debloatware }
         4 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
+            try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
             exit
         }
     }

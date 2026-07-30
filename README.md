@@ -29,6 +29,9 @@ thông tin phần cứng đã được nhúng sẵn bên trong.
   x64 chạy trước, x86 chờ. Chúng vẫn cài song song với mọi app khác.
 - **Winget Fallback**: nếu Direct Link chết hoặc bộ cài trả về exit code lỗi, app đó tự động
   được cài lại qua `winget` (mỗi app chỉ fallback một lần).
+- **Giao diện tự thích ứng**: bảng tiến trình có ký hiệu và màu theo trạng thái, % tải trực tiếp,
+  thanh tiến trình tổng và thẻ tổng kết cuối. Terminal hiện đại dùng ký tự Unicode, console cũ tự
+  hạ cấp sang ASCII. Ghi log phiên ra `Desktop\MiniApp-log.txt`.
 - **Timeout riêng từng app**: 5 phút cho bộ cài silent, 30 phút cho Office 2024. Tiến trình kẹt
   bị kill để hàng đợi đi tiếp.
 - **Dọn dẹp**: xóa toàn bộ file cài (~400MB) trong `%TEMP%\MiniAZ_Apps` sau khi xong.
