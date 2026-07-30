@@ -1031,11 +1031,6 @@ function Install-NecessaryApps {
     }
     Write-BoxSep
     Write-BoxLine ("  Elapsed : {0:mm\:ss}" -f $elapsed) "Gray"
-    # Only claim a log exists when the transcript actually started. Filename
-    # only: full paths overflow the box when Desktop is redirected.
-    if ($Script:LogPath) {
-        Write-BoxLine ("  Log     : {0} (on Desktop)" -f (Split-Path $Script:LogPath -Leaf)) "Gray"
-    }
     Write-BoxBottom
 
     if ($failed.Count -gt 0) {
@@ -1175,20 +1170,6 @@ function Read-MenuChoice {
 
 # =========================================================================
 # MAIN LOOP
-# =========================================================================
-# Session transcript lives on the Desktop (outside %TEMP%\MiniApp so it
-# survives the post-install cleanup) for later troubleshooting. LogPath stays
-# empty if transcription fails, so the UI never points at a file that is absent.
-$Script:LogPath = ""
-try {
-    $wantLog = Join-Path ([Environment]::GetFolderPath('Desktop')) "MiniApp-log.txt"
-    Start-Transcript -Path $wantLog -Append -ErrorAction Stop | Out-Null
-    $Script:LogPath = $wantLog
-}
-catch {
-    Write-Host "[WARN] Could not start session log: $($_.Exception.Message)" -ForegroundColor Yellow
-}
-
 while ($true) {
     $choice = Read-MenuChoice
     Clear-Host
@@ -1200,7 +1181,6 @@ while ($true) {
         3 { Invoke-Debloatware }
         4 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
-            try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
             exit
         }
     }
