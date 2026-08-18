@@ -49,7 +49,11 @@ Nếu Winget không cài được trên máy, menu này báo lỗi và thoát th
 
 ### 3. Information
 Trích xuất thông tin phần cứng (Model, Serial, CPU, RAM, Disk, GPU, độ phân giải), xuất ra
-`Desktop\info.txt` rồi mở Notepad. Tự tạo shortcut Word/Excel/PowerPoint nếu tìm thấy Office.
+`Desktop\info.txt` rồi mở Notepad. Đưa luôn icon bộ office ra desktop, dò theo cái đang thực sự
+có trên máy chứ không theo câu trả lời bản quyền lúc đầu:
+
+- **Office**: tự tạo shortcut Word/Excel/PowerPoint từ đường dẫn exe trong `Program Files`.
+- **WPS**: chép sẵn shortcut từ `Start Menu\Programs` ra desktop (WPS đã tự tạo sẵn ở đó).
 
 ### 4. Debloatware Windows
 Chạy [Win11Debloat](https://github.com/raphire/win11debloat) ở chế độ `-RunDefaults -Silent`.

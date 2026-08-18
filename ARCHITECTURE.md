@@ -143,10 +143,9 @@ tham số nên vẫn tự hỏi như cũ.
 
 Hai điểm cố ý **không** chạy song song:
 
-- **Báo cáo phần cứng chạy cuối.** `Show-SystemInfo` tạo shortcut Word/Excel/PowerPoint bằng cách
-  dò `Program Files\Microsoft Office`; chạy song song thì Office còn đang cài, không dò thấy gì và
-  shortcut lặng lẽ không được tạo. Nó còn bật Notepad — đè lên bảng tiến trình đang neo vị trí
-  bằng `SetCursorPosition`.
+- **Báo cáo phần cứng chạy cuối.** `Show-SystemInfo` đưa icon bộ office ra desktop; chạy song song
+  thì bộ office còn đang cài, không dò thấy gì và icon lặng lẽ không được tạo. Nó còn bật Notepad —
+  đè lên bảng tiến trình đang neo vị trí bằng `SetCursorPosition`.
 - **Output của Win11Debloat bị nuốt** (`*>&1 | Out-Null`) vì job chạy cùng lúc với bảng tiến trình
   live; chỉ còn đúng một dòng `[Debloat] ...: OK|FAILED`. Exception vẫn được `catch` và báo nguyên
   văn, nên lỗi không bị giấu.
@@ -176,6 +175,12 @@ giờ trỏ tới file không tồn tại (trường hợp policy chặn transcr
 chuyển hướng không ghi được).
 
 ## 3. Các cơ chế an toàn
+
+**Icon desktop hai đường** — Office được dựng shortcut từ đường dẫn exe trong `Program Files`, còn
+WPS thì *chép* file `.lnk` có sẵn từ `Start Menu\Programs` (cả nhánh `%APPDATA%` lẫn `%ProgramData%`)
+vì bộ cài của nó đã tạo sẵn ở đó. Lọc theo tên file **hoặc** tên thư mục cha khớp `WPS`, vì có bản
+đặt tên `Writer.lnk` nằm trong thư mục `WPS Office`. Nhận diện theo thứ thực sự có trên đĩa, không
+theo câu trả lời bản quyền, nên máy có cả hai bộ sẽ ra cả hai bộ icon.
 
 **Smart Skip** — quét 3 nhánh registry Uninstall, cộng thêm kiểm tra trực tiếp thư mục cho Zalo
 và Telegram (hai app này cài vào user profile, không ghi registry chuẩn), và `C:\EVKey` cho EVKey.

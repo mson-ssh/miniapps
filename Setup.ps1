@@ -1149,7 +1149,9 @@ function Show-SystemInfo {
         return
     }
 
-    # Office installs without desktop shortcuts, so create them if Office is present
+    # Neither suite puts icons on the desktop, so do it here. Detected from what
+    # is actually on the machine rather than from the earlier licence answer, so
+    # a box carrying both suites gets both sets.
     try {
         $officeApps = @{ "WINWORD.EXE" = "Word"; "EXCEL.EXE" = "Excel"; "POWERPNT.EXE" = "PowerPoint" }
         $officeRoots = @(
@@ -1172,9 +1174,34 @@ function Show-SystemInfo {
             }
         }
         if ($created -gt 0) { Write-Host "[OK] Created $created Office desktop shortcut(s)." -ForegroundColor Green }
+
+        # WPS already ships finished shortcuts under Start Menu\Programs, so they
+        # are copied out instead of being rebuilt from an exe path. Both hives are
+        # checked: WPS installs per-user, but an all-users copy can exist too.
+        $startMenus = @(
+            (Join-Path $env:APPDATA     "Microsoft\Windows\Start Menu\Programs"),
+            (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs")
+        )
+        $copied = 0
+        foreach ($menu in $startMenus) {
+            if (-not (Test-Path $menu)) { continue }
+            # Match the folder name too: WPS files its shortcuts inside a "WPS
+            # Office" folder, and some builds name them plain "Writer.lnk".
+            $links = Get-ChildItem -Path $menu -Filter "*.lnk" -Recurse -ErrorAction SilentlyContinue |
+                     Where-Object { ($_.Name -match 'WPS' -or $_.Directory.Name -match 'WPS') -and
+                                    $_.Name -notmatch 'Uninstall|Repair|Feedback' }
+            foreach ($link in $links) {
+                $dest = Join-Path $desktop $link.Name
+                if (-not (Test-Path $dest)) {
+                    Copy-Item -LiteralPath $link.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
+                    if (Test-Path $dest) { $copied++ }
+                }
+            }
+        }
+        if ($copied -gt 0) { Write-Host "[OK] Copied $copied WPS desktop shortcut(s)." -ForegroundColor Green }
     }
     catch {
-        Write-Host "[WARN] Could not create Office shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[WARN] Could not create desktop shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
