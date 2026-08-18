@@ -622,29 +622,58 @@ function Set-CursorTop {
 function Read-OfficeChoice {
     # Office 2024 is only allowed on licensed machines; everything else gets
     # WPS Office. Asked once, before a single byte is downloaded.
+    # Same navigation as the main menu: arrows + Enter, or a number key.
     # Returns $true for licensed (Office 2024), $false for WPS Office.
-    Write-Host ""
-    Write-BoxTop
-    Write-BoxLine "  OFFICE SUITE" "White"
-    Write-BoxSep
-    Write-BoxLine "  Does this customer / model have an Office licence?" "Yellow"
-    Write-BoxSep
-    Write-BoxLine "    Y = Yes - install Office 2024" "Gray"
-    Write-BoxLine "    N = No  - install WPS Office instead" "Gray"
-    Write-BoxBottom
+    $options = @(
+        @{ Label = "Yes - install Office 2024"; Desc = "Customer / model holds an Office licence" },
+        @{ Label = "No  - install WPS Office";  Desc = "No licence - WPS Office takes the Office slot" }
+    )
 
     if (-not $Script:CanReposition) {
         # Non-interactive (piped/redirected): never block, keep the old default
-        Write-Host "`n  Non-interactive session - defaulting to Office 2024." -ForegroundColor DarkGray
+        Write-Host "`n[Office] Non-interactive session - defaulting to Office 2024." -ForegroundColor DarkGray
         return $true
     }
 
+    $selected = 0
+    $choice = $null
     while ($true) {
-        Write-Host "`n  Office licence? [Y/N] " -ForegroundColor Cyan -NoNewline
-        $answer = try { [System.Console]::ReadKey($true).KeyChar } catch { 'y' }
-        Write-Host $answer
-        if ("$answer" -match '^[yY]$') { return $true }
-        if ("$answer" -match '^[nN]$') { return $false }
+        Clear-Host
+        Write-BoxTop
+        Write-BoxLine "  OFFICE SUITE" "White"
+        Write-BoxSep
+        Write-BoxLine "  Does this customer / model have an Office licence?" "Yellow"
+        Write-BoxBottom
+        Write-Host ""
+
+        for ($i = 0; $i -lt $options.Count; $i++) {
+            $num = $i + 1
+            if ($i -eq $selected) {
+                Write-Host ("  {0} {1}. {2}" -f $Script:Glyph.Run, $num, $options[$i].Label.PadRight(28)) -ForegroundColor Black -BackgroundColor Cyan
+                Write-Host ("       {0}" -f $options[$i].Desc) -ForegroundColor DarkGray
+            }
+            else {
+                Write-Host ("    {0}. {1}" -f $num, $options[$i].Label) -ForegroundColor White
+            }
+        }
+        Write-Host ""
+        Write-Host "  Up/Down + Enter, or press a number key." -ForegroundColor DarkGray
+
+        switch ([System.Console]::ReadKey($true).Key) {
+            'UpArrow'   { $selected = ($selected - 1 + $options.Count) % $options.Count }
+            'DownArrow' { $selected = ($selected + 1) % $options.Count }
+            'Enter'     { $choice = $selected }
+            'D1'        { $choice = 0 }
+            'NumPad1'   { $choice = 0 }
+            'D2'        { $choice = 1 }
+            'NumPad2'   { $choice = 1 }
+        }
+
+        if ($null -ne $choice) {
+            # Clear so the install table starts at the top of a clean screen
+            Clear-Host
+            return ($choice -eq 0)
+        }
     }
 }
 
