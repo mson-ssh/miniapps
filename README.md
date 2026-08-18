@@ -18,6 +18,8 @@ thông tin phần cứng đã được nhúng sẵn bên trong.
 ## Các tính năng chính (Interactive Menu)
 
 ### 1. Install App with Installer
+- **Hỏi bản quyền Office trước khi chạy**: máy/khách có bản quyền thì cài Office 2024, không có
+  thì WPS Office thế vào đúng vị trí đó trong danh sách. Hỏi một lần, trước khi tải bất cứ thứ gì.
 - **Cấu hình Windows & chia ổ đĩa chạy ngầm**: song song với quá trình cài phần mềm. Kết quả
   từng mục được in ra cuối cùng (kể cả khi thất bại), không im lặng bỏ qua.
 - **Smart Skip**: quét Registry (và cả thư mục AppData cho Zalo/Telegram). Phần mềm đã có sẵn
@@ -39,7 +41,7 @@ thông tin phần cứng đã được nhúng sẵn bên trong.
 - **Dọn dẹp**: xóa toàn bộ file cài (~400MB) trong `%TEMP%\MiniAZ_Apps` sau khi xong.
 
 Danh sách app: *Chrome, EVKey, K-Lite Codec Pack, Telegram, UltraViewer, WinRAR, Zalo, Zoom,
-Office 2024, VC++ Redistributable x64 & x86*.
+Office 2024 (hoặc WPS Office), VC++ Redistributable x64 & x86*.
 
 ### 2. Install App with Winget
 Cài toàn bộ qua Winget thay vì Direct Link. App nào không có Winget ID vẫn dùng Direct Link.

@@ -8,6 +8,7 @@ Winrar: https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/winrar.exe
 Zalo: https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zalo.exe
 Zoom: https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/zoom.exe
 Office24: https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OfficeSetup.exe
+WPS Office (thay Office khi máy không có bản quyền): https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/wps.exe
 
 Tải và cài đặt tuần tự:
 VC redist x64: https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/VC_redist.x64.exe

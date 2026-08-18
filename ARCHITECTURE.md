@@ -14,7 +14,7 @@ Tài liệu này giải thích luồng hoạt động và các cơ chế an toà
 | `$ConfigScript` | Scriptblock cấu hình Windows, chạy trong background job |
 | `$DiskScript` | Scriptblock chia phân vùng ổ đĩa, chạy trong background job |
 | `Get-HardwareInfo` | Trích xuất thông số phần cứng ra `Desktop\info.txt` |
-| `$AppCatalog` | Bảng khai báo 11 phần mềm |
+| `$AppCatalog` | Bảng khai báo 11 phần mềm (`$WpsOffice` là bản thay cho ô Office) |
 | `Install-NecessaryApps` | Engine tải/cài chính |
 | Menu UI | Điều hướng bằng phím mũi tên hoặc phím số |
 
@@ -34,6 +34,25 @@ Script kiểm tra `WindowsBuiltInRole::Administrator`. Nếu chưa có quyền:
   (`$MyInvocation.MyCommand.ScriptBlock` chỉ trả về lệnh gọi ngoài, `ScriptContents` rỗng), nên
   buộc phải tải lại từ `$SelfUrl`. Đây là lý do `$SelfUrl` được khai báo một chỗ duy nhất ở đầu
   file — đổi repo/branch thì chỉ sửa dòng đó.
+
+### Giai đoạn 1b: Chọn bộ Office (chỉ chế độ Installer)
+
+`Read-OfficeChoice` hỏi máy/khách có bản quyền Office không. Có → giữ nguyên `Office 2024`.
+Không → `$WpsOffice` thay vào **đúng ô đó** của catalog, mọi thứ còn lại không đổi:
+
+```powershell
+$catalog = @($AppCatalog | ForEach-Object { if ($_.Name -eq "Office 2024") { $WpsOffice } else { $_ } })
+```
+
+Engine từ đây chỉ đọc `$catalog`, không đọc `$AppCatalog` nữa — bảng tiến trình, `$orderIndex`,
+rescue winget và thẻ tổng kết đều tự khớp theo lựa chọn.
+
+Hỏi trước khi `Start-Job` và trước khi tải, nên không có gì phải hủy giữa chừng. Phiên
+non-interactive (output bị pipe/redirect) không bao giờ hỏi và giữ mặc định Office 2024 như cũ.
+
+WPS Office là bộ cài NSIS 3.05 nên tham số silent là `/S`; nó cài theo từng user vào
+`%LOCALAPPDATA%\Kingsoft\WPS Office` và ghi khóa gỡ cài đặt ở HKCU — nhánh registry mà
+`Test-IsInstalled` vốn đã quét, nên Smart Skip chạy được không cần xử lý riêng.
 
 ### Giai đoạn 2: Chạy ngầm Config + Disk
 

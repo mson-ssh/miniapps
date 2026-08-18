@@ -435,6 +435,12 @@ $AppCatalog = @(
     @{ Name = "VCRedist x86"; Url = "$R2/VC_redist.x86.exe";   WingetId = "Microsoft.VCRedist.2015+.x86";    Args = "/install /quiet /norestart";               MatchName = "Microsoft Visual C\+\+.*x86";   TimeoutSec = 300 }
 )
 
+# Stand-in for the Office 2024 slot on machines without an Office licence.
+# NSIS 3.05 installer, so /S is the silent switch. It installs per-user under
+# %LOCALAPPDATA%\Kingsoft\WPS Office and registers under HKCU Uninstall, which
+# Test-IsInstalled already scans.
+$WpsOffice = @{ Name = "WPS Office"; Url = "$R2/wps.exe"; WingetId = "Kingsoft.WPSOffice"; Args = "/S"; MatchName = "WPS Office"; TimeoutSec = 600 }
+
 # Installer exit codes treated as success: 0 = ok, 3010 = reboot required,
 # -1978335201 = already installed (winget/VC Redist)
 $SuccessExitCodes = @(0, 3010, -1978335201)
@@ -613,6 +619,35 @@ function Set-CursorTop {
     if ($Script:CanReposition) { try { [Console]::SetCursorPosition(0, $Top) } catch { } }
 }
 
+function Read-OfficeChoice {
+    # Office 2024 is only allowed on licensed machines; everything else gets
+    # WPS Office. Asked once, before a single byte is downloaded.
+    # Returns $true for licensed (Office 2024), $false for WPS Office.
+    Write-Host ""
+    Write-BoxTop
+    Write-BoxLine "  OFFICE SUITE" "White"
+    Write-BoxSep
+    Write-BoxLine "  Does this customer / model have an Office licence?" "Yellow"
+    Write-BoxSep
+    Write-BoxLine "    Y = Yes - install Office 2024" "Gray"
+    Write-BoxLine "    N = No  - install WPS Office instead" "Gray"
+    Write-BoxBottom
+
+    if (-not $Script:CanReposition) {
+        # Non-interactive (piped/redirected): never block, keep the old default
+        Write-Host "`n  Non-interactive session - defaulting to Office 2024." -ForegroundColor DarkGray
+        return $true
+    }
+
+    while ($true) {
+        Write-Host "`n  Office licence? [Y/N] " -ForegroundColor Cyan -NoNewline
+        $answer = try { [System.Console]::ReadKey($true).KeyChar } catch { 'y' }
+        Write-Host $answer
+        if ("$answer" -match '^[yY]$') { return $true }
+        if ("$answer" -match '^[nN]$') { return $false }
+    }
+}
+
 # =========================================================================
 # MAIN INSTALL ENGINE
 # Downloads run fully in parallel; installs run one at a time from a queue
@@ -620,6 +655,12 @@ function Set-CursorTop {
 # =========================================================================
 function Install-NecessaryApps {
     param([ValidateSet('Installer', 'Winget')][string]$Method = 'Installer')
+
+    # WPS Office takes over the Office 2024 slot when the machine has no licence
+    $catalog = $AppCatalog
+    if ($Method -eq 'Installer' -and -not (Read-OfficeChoice)) {
+        $catalog = @($AppCatalog | ForEach-Object { if ($_.Name -eq "Office 2024") { $WpsOffice } else { $_ } })
+    }
 
     Write-Host "`n[System] Starting Config and Disk setup in the background..." -ForegroundColor Magenta
     $configJob = Start-Job -ScriptBlock $ConfigScript
@@ -685,7 +726,7 @@ function Install-NecessaryApps {
     $renderTable = {
         Set-CursorTop $startTop
         $done = 0; $fail = 0
-        foreach ($a in $AppCatalog) {
+        foreach ($a in $catalog) {
             $state = $appStates[$a.Name]
             if ($state -like "Done*" -or $state -like "Already*") { $done++ }
             if ($state -like "Failed*") { $fail++ }
@@ -701,7 +742,7 @@ function Install-NecessaryApps {
             Write-Host $line.PadRight(58) -ForegroundColor $color
         }
         # Overall progress line
-        $total = $AppCatalog.Count
+        $total = $catalog.Count
         $pct = if ($total) { [int](($done + $fail) * 100 / $total) } else { 0 }
         $elapsed = (Get-Date) - $overallStart
         $bar = Get-ProgressBar -Percent $pct -Width 22
@@ -733,7 +774,7 @@ function Install-NecessaryApps {
         $downloadTasks[$app.Name] = $wc.DownloadFileTaskAsync($app.Url, $tempExe)
     }
 
-    foreach ($app in $AppCatalog) {
+    foreach ($app in $catalog) {
         if ($app.MatchName -and (Test-IsInstalled $app.MatchName)) {
             $appStates[$app.Name] = "Already Installed"
         }
@@ -757,7 +798,7 @@ function Install-NecessaryApps {
 
     # Catalog order decides who goes first inside a serial group
     $orderIndex = @{}
-    for ($i = 0; $i -lt $AppCatalog.Count; $i++) { $orderIndex[$AppCatalog[$i].Name] = $i }
+    for ($i = 0; $i -lt $catalog.Count; $i++) { $orderIndex[$catalog[$i].Name] = $i }
 
     # $retryAt must be part of the condition: an app awaiting its backoff is in
     # none of the other collections, so the loop would exit before it retries.
@@ -822,7 +863,7 @@ function Install-NecessaryApps {
             if ((Get-Date) -ge $retryAt[$key]) {
                 $retryAt.Remove($key)
                 $appStates[$key] = "Downloading"
-                & $startDownload ($AppCatalog | Where-Object { $_.Name -eq $key })
+                & $startDownload ($catalog | Where-Object { $_.Name -eq $key })
                 $dirty = $true
             }
         }
@@ -878,7 +919,7 @@ function Install-NecessaryApps {
             }
 
             $pending = @($pending | Where-Object { $_ -ne $key })
-            $app = $AppCatalog | Where-Object { $_.Name -eq $key }
+            $app = $catalog | Where-Object { $_.Name -eq $key }
             $appStates[$key] = "Installing"
             $dirty = $true
 
@@ -964,8 +1005,8 @@ function Install-NecessaryApps {
     # Nothing switches package managers without being asked. Only apps that
     # failed AND have a WingetId can be rescued.
     if ($Method -eq 'Installer') {
-        $rescuable = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Failed*" -and $_.WingetId })
-        $unrescuable = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Failed*" -and -not $_.WingetId })
+        $rescuable = @($catalog | Where-Object { $appStates[$_.Name] -like "Failed*" -and $_.WingetId })
+        $unrescuable = @($catalog | Where-Object { $appStates[$_.Name] -like "Failed*" -and -not $_.WingetId })
 
         if ($rescuable.Count -gt 0) {
             Write-Host ""
@@ -1014,9 +1055,9 @@ function Install-NecessaryApps {
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 
     # --- Summary card ---
-    $installed = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Done*" })
-    $skipped   = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Already*" })
-    $failed    = @($AppCatalog | Where-Object { $appStates[$_.Name] -like "Failed*" })
+    $installed = @($catalog | Where-Object { $appStates[$_.Name] -like "Done*" })
+    $skipped   = @($catalog | Where-Object { $appStates[$_.Name] -like "Already*" })
+    $failed    = @($catalog | Where-Object { $appStates[$_.Name] -like "Failed*" })
     $elapsed   = (Get-Date) - $overallStart
 
     Write-Host ""
