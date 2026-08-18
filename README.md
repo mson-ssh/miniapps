@@ -54,11 +54,19 @@ Trích xuất thông tin phần cứng (Model, Serial, CPU, RAM, Disk, GPU, đ�
 ### 4. Debloatware Windows
 Chạy [Win11Debloat](https://github.com/raphire/win11debloat) ở chế độ `-RunDefaults -Silent`.
 
+### 5. Optimize Install
+Gộp mục 1 + 4 + 3 vào một phím. Chọn bằng số `5`, bằng mũi tên, hoặc gõ `A` rồi Enter.
+
+Hỏi bản quyền Office trước, xong mới khởi động mọi thứ. **Debloat chạy song song** với quá trình
+cài phần mềm (dạng background job như Config/Disk), kết quả in ra sau. Báo cáo phần cứng chạy
+**cuối cùng** — cố ý, vì shortcut Word/Excel/PowerPoint cần bộ Office vừa cài đã nằm trên đĩa,
+và Notepad không được bật đè lên bảng tiến trình đang vẽ.
+
 ---
 
 ## Lưu ý quan trọng
 
-Menu 1 và 2 sẽ **tự động thực hiện các thay đổi khó hoàn tác** ngay khi chọn, không hỏi lại:
+Menu 1, 2 và 5 sẽ **tự động thực hiện các thay đổi khó hoàn tác** ngay khi chọn, không hỏi lại:
 
 - Chia lại phân vùng ổ C: (shrink C:, tạo D:/E:) — có các chốt an toàn: bỏ qua nếu ổ > 1100GB,
   bỏ qua nếu D:/E: đã tồn tại, hủy nếu C: còn dưới 30GB, và **giải mã BitLocker** trên C:

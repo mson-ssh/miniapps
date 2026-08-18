@@ -353,6 +353,22 @@ $DiskScript = {
 }
 
 # =========================================================================
+# EMBEDDED: DEBLOATWARE
+# Job form of Invoke-Debloatware, used by Optimize Install so the debloat pass
+# runs while apps install. Win11Debloat's own chatter is swallowed so it cannot
+# scribble over the live install table; only the outcome line survives.
+# =========================================================================
+$DebloatScript = {
+    $ProgressPreference = 'SilentlyContinue'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    try {
+        & ([scriptblock]::Create((Invoke-RestMethod "https://debloat.raphi.re/"))) -RunDefaults -Silent *>&1 | Out-Null
+        Write-Output "[Debloat] Win11Debloat (-RunDefaults -Silent): OK"
+    }
+    catch { Write-Output "[Debloat] Win11Debloat: FAILED - $($_.Exception.Message)" }
+}
+
+# =========================================================================
 # EMBEDDED: HARDWARE INFORMATION (was config/Get-info.ps1)
 # =========================================================================
 function Get-HardwareInfo {
@@ -683,12 +699,20 @@ function Read-OfficeChoice {
 # so concurrent installers never fight over the Windows Installer service.
 # =========================================================================
 function Install-NecessaryApps {
-    param([ValidateSet('Installer', 'Winget')][string]$Method = 'Installer')
+    param(
+        [ValidateSet('Installer', 'Winget')][string]$Method = 'Installer',
+        # [object], not [bool]: $null means "nobody asked yet, ask now". A [bool]
+        # would quietly turn that into $false and drop Office without asking.
+        [object]$OfficeLicensed = $null
+    )
 
     # WPS Office takes over the Office 2024 slot when the machine has no licence
     $catalog = $AppCatalog
-    if ($Method -eq 'Installer' -and -not (Read-OfficeChoice)) {
-        $catalog = @($AppCatalog | ForEach-Object { if ($_.Name -eq "Office 2024") { $WpsOffice } else { $_ } })
+    if ($Method -eq 'Installer') {
+        if ($null -eq $OfficeLicensed) { $OfficeLicensed = Read-OfficeChoice }
+        if (-not $OfficeLicensed) {
+            $catalog = @($AppCatalog | ForEach-Object { if ($_.Name -eq "Office 2024") { $WpsOffice } else { $_ } })
+        }
     }
 
     Write-Host "`n[System] Starting Config and Disk setup in the background..." -ForegroundColor Magenta
@@ -1165,6 +1189,41 @@ function Invoke-Debloatware {
     }
 }
 
+function Invoke-OptimizeInstall {
+    # Menu 1 + 4 + 3 off a single keypress. The Office question is asked here
+    # instead of inside the engine so everything starts only after it is
+    # answered, and the answer is handed down rather than asked twice.
+    $licensed = Read-OfficeChoice
+
+    Write-Host "`n[System] Starting Debloat in the background..." -ForegroundColor Magenta
+    $debloatJob = Start-Job -ScriptBlock $DebloatScript
+
+    Install-NecessaryApps -Method 'Installer' -OfficeLicensed $licensed
+
+    # Bounded like the Config/Disk jobs: a wedged debloat must not strand the run
+    Write-Host "`n[System] Waiting for the Debloat job to finish..." -ForegroundColor Cyan
+    Wait-Job $debloatJob -Timeout $Script:JobTimeoutSec | Out-Null
+    if ($debloatJob.State -eq 'Running') {
+        Write-Host ("   [!] Debloat still running after {0} min - stopping it." -f
+            [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
+        Stop-Job -Job $debloatJob -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "`n[Debloat Results]" -ForegroundColor Cyan
+    foreach ($line in (Receive-Job -Job $debloatJob)) {
+        $color = if ($line -match 'FAILED') { 'Red' } else { 'Gray' }
+        Write-Host "   $line" -ForegroundColor $color
+    }
+    if ($debloatJob.State -eq 'Failed') {
+        Write-Host "   [!] Debloat job crashed: $($debloatJob.ChildJobs[0].JobStateInfo.Reason.Message)" -ForegroundColor Red
+    }
+    Remove-Job $debloatJob -Force | Out-Null
+
+    # Runs last on purpose: the Office shortcuts need the suite that was just
+    # installed to be on disk, and Notepad must not pop over the live table.
+    Show-SystemInfo
+}
+
 # =========================================================================
 # INTERACTIVE MENU UI
 # =========================================================================
@@ -1173,6 +1232,7 @@ $MenuOptions = @(
     @{ Label = "Install Apps (Winget)";    Desc = "Install via Windows Package Manager" },
     @{ Label = "System Information";        Desc = "Export hardware report to Desktop" },
     @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
+    @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
     @{ Label = "Exit";                      Desc = "Close the tool" }
 )
 
@@ -1207,7 +1267,7 @@ function Show-Menu {
         }
     }
     Write-Host ""
-    Write-Host "  Up/Down + Enter, or press a number key." -ForegroundColor DarkGray
+    Write-Host "  Up/Down + Enter, press a number key, or A for Optimize Install." -ForegroundColor DarkGray
 }
 
 function Read-MenuChoice {
@@ -1234,6 +1294,10 @@ function Read-MenuChoice {
             'NumPad4'   { return 3 }
             'D5'        { return 4 }
             'NumPad5'   { return 4 }
+            'D6'        { return 5 }
+            'NumPad6'   { return 5 }
+            # A highlights Optimize Install; Enter then runs it
+            'A'         { $selectedIndex = 4 }
         }
     }
 }
@@ -1249,7 +1313,8 @@ while ($true) {
         1 { Install-NecessaryApps -Method 'Winget' }
         2 { Show-SystemInfo }
         3 { Invoke-Debloatware }
-        4 {
+        4 { Invoke-OptimizeInstall }
+        5 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
         }

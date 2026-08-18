@@ -13,10 +13,12 @@ Tài liệu này giải thích luồng hoạt động và các cơ chế an toà
 | Auto-Elevate | Kiểm tra quyền Admin, tự leo quyền qua UAC |
 | `$ConfigScript` | Scriptblock cấu hình Windows, chạy trong background job |
 | `$DiskScript` | Scriptblock chia phân vùng ổ đĩa, chạy trong background job |
+| `$DebloatScript` | Scriptblock Win11Debloat, chạy nền cho Optimize Install |
 | `Get-HardwareInfo` | Trích xuất thông số phần cứng ra `Desktop\info.txt` |
 | `$AppCatalog` | Bảng khai báo 11 phần mềm (`$WpsOffice` là bản thay cho ô Office) |
 | `Install-NecessaryApps` | Engine tải/cài chính |
-| Menu UI | Điều hướng bằng phím mũi tên hoặc phím số |
+| `Invoke-OptimizeInstall` | Gộp menu 1 + 4 + 3 vào một lượt |
+| Menu UI | Điều hướng bằng phím mũi tên, phím số, hoặc `A` |
 
 Thư mục `config/` vẫn giữ bản độc lập của 3 script trên để dùng cho WinRAR SFX. `Setup.ps1`
 không phụ thuộc vào chúng — sửa một bên **không** tự động cập nhật bên kia.
@@ -123,6 +125,31 @@ $SerialGroups = @{
 
 UI chỉ vẽ lại khi có thay đổi trạng thái (`$dirty`), dùng `[Console]::SetCursorPosition` để
 cập nhật tại chỗ.
+
+### Giai đoạn 5: Optimize Install (menu 5 / phím `A`)
+
+`Invoke-OptimizeInstall` chạy menu 1 + 4 + 3 trong một lượt. Thứ tự có chủ đích:
+
+1. `Read-OfficeChoice` hỏi trước, ngay đầu — không có gì khởi động trước khi câu hỏi được trả lời.
+2. `$DebloatScript` vào `Start-Job` → chạy **song song** với toàn bộ engine cài đặt.
+3. `Install-NecessaryApps -OfficeLicensed $licensed` chạy foreground, giữ độc quyền console.
+4. Thu `$debloatJob` với cùng mốc `$JobTimeoutSec` như Config/Disk, in kết quả.
+5. `Show-SystemInfo` **cuối cùng**.
+
+Câu trả lời Office được truyền xuống qua tham số `-OfficeLicensed` thay vì hỏi lại. Tham số khai
+báo `[object]` chứ không phải `[bool]`: `$null` mang nghĩa "chưa ai hỏi, hỏi ngay bây giờ", còn
+`[bool]` sẽ âm thầm biến `$null` thành `$false` và bỏ Office mà không hỏi ai. Menu 1 gọi không kèm
+tham số nên vẫn tự hỏi như cũ.
+
+Hai điểm cố ý **không** chạy song song:
+
+- **Báo cáo phần cứng chạy cuối.** `Show-SystemInfo` tạo shortcut Word/Excel/PowerPoint bằng cách
+  dò `Program Files\Microsoft Office`; chạy song song thì Office còn đang cài, không dò thấy gì và
+  shortcut lặng lẽ không được tạo. Nó còn bật Notepad — đè lên bảng tiến trình đang neo vị trí
+  bằng `SetCursorPosition`.
+- **Output của Win11Debloat bị nuốt** (`*>&1 | Out-Null`) vì job chạy cùng lúc với bảng tiến trình
+  live; chỉ còn đúng một dòng `[Debloat] ...: OK|FAILED`. Exception vẫn được `catch` và báo nguyên
+  văn, nên lỗi không bị giấu.
 
 ---
 
