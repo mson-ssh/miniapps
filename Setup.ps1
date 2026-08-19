@@ -376,10 +376,23 @@ $RemoveOfficeScript = {
     $GetHelp_URL  = "https://aka.ms/SaRA_EnterpriseVersionFiles"
     $GetHelp_ZIP  = "$env:TEMP\GetHelpCmd.zip"
     $GetHelp_DIR  = "$env:TEMP\GetHelpCmd"
+    $GetHelp_OUT  = "$env:TEMP\GetHelpCmd_stdout.log"
+    $GetHelp_ERR  = "$env:TEMP\GetHelpCmd_stderr.log"
     $OfficeProcesses = "lync", "winword", "excel", "msaccess", "mstore", "infopath", "setlang", "msouc", "ois", "onenote", "outlook", "powerpnt", "mspub", "groove", "visio", "winproj", "graph", "teams"
 
+    $stopped = @()
     foreach ($name in $OfficeProcesses) {
-        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $running = Get-Process -Name $name -ErrorAction SilentlyContinue
+        if ($running) {
+            $running | Stop-Process -Force -ErrorAction SilentlyContinue
+            $stopped += $name
+        }
+    }
+    if ($stopped.Count -gt 0) {
+        Write-Output "[Office] Stopped running process(es): $($stopped -join ', ')"
+    }
+    else {
+        Write-Output "[Office] No running Office processes found."
     }
 
     try {
@@ -387,15 +400,38 @@ $RemoveOfficeScript = {
         if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
         New-Item -Path $GetHelp_DIR -ItemType Directory -Force | Out-Null
 
+        Write-Output "[Office] Downloading GetHelpCmd from $GetHelp_URL ..."
         Start-BitsTransfer -Source $GetHelp_URL -Destination $GetHelp_ZIP -ErrorAction Stop
+        $zipSizeMB = [math]::Round((Get-Item $GetHelp_ZIP).Length / 1MB, 2)
+        Write-Output "[Office] Downloaded $zipSizeMB MB -> $GetHelp_ZIP"
+
+        Write-Output "[Office] Extracting archive to $GetHelp_DIR ..."
         Expand-Archive -Path $GetHelp_ZIP -DestinationPath $GetHelp_DIR -Force
 
         # Search instead of assuming a fixed subfolder: Microsoft has changed
         # the zip layout before (used to nest everything under a DONE\ folder).
-        $exe = Get-ChildItem -Path $GetHelp_DIR -Filter "GetHelpCmd.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        $allFiles = Get-ChildItem -Path $GetHelp_DIR -Recurse -File -ErrorAction SilentlyContinue
+        Write-Output "[Office] Archive extracted: $($allFiles.Count) file(s) found."
+        $exe = $allFiles | Where-Object { $_.Name -eq 'GetHelpCmd.exe' } | Select-Object -First 1
 
         if ($exe) {
-            $proc = Start-Process -FilePath $exe.FullName -ArgumentList "-S OfficeScrubScenario -AcceptEula -OfficeVersion All" -Wait -PassThru -NoNewWindow
+            Write-Output "[Office] Found GetHelpCmd.exe at $($exe.FullName)"
+            $argList = "-S OfficeScrubScenario -AcceptEula -OfficeVersion All"
+            Write-Output "[Office] Running: GetHelpCmd.exe $argList"
+
+            if (Test-Path $GetHelp_OUT) { Remove-Item $GetHelp_OUT -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $GetHelp_ERR) { Remove-Item $GetHelp_ERR -Force -ErrorAction SilentlyContinue }
+            $proc = Start-Process -FilePath $exe.FullName -ArgumentList $argList -Wait -PassThru -NoNewWindow `
+                                   -RedirectStandardOutput $GetHelp_OUT -RedirectStandardError $GetHelp_ERR
+            Write-Output "[Office] GetHelpCmd exit code: $($proc.ExitCode)"
+
+            foreach ($line in (Get-Content -Path $GetHelp_OUT -ErrorAction SilentlyContinue)) {
+                if ($line) { Write-Output "[Office][stdout] $line" }
+            }
+            foreach ($line in (Get-Content -Path $GetHelp_ERR -ErrorAction SilentlyContinue)) {
+                if ($line) { Write-Output "[Office][stderr] $line" }
+            }
+
             # 0 = success. 6 = an Office process was still running (shouldn't
             # happen, they were stopped above). Anything else = failure; the
             # raw code is logged since Microsoft's failure codes for this
@@ -409,12 +445,16 @@ $RemoveOfficeScript = {
         }
         else {
             Write-Output "[Office] Force removal: FAILED - download did not produce GetHelpCmd.exe"
+            Write-Output "[Office] Files found in archive instead:"
+            foreach ($f in $allFiles) { Write-Output "[Office]   $($f.FullName)" }
         }
     }
     catch { Write-Output "[Office] Force removal: FAILED - $($_.Exception.Message)" }
     finally {
         if (Test-Path $GetHelp_ZIP) { Remove-Item $GetHelp_ZIP -Force -ErrorAction SilentlyContinue }
         if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $GetHelp_OUT) { Remove-Item $GetHelp_OUT -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $GetHelp_ERR) { Remove-Item $GetHelp_ERR -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -1391,7 +1431,10 @@ function Invoke-RemoveOffice {
     # foreground, so it can be tested/run on its own with live output.
     Write-Host "`n[System] Force-removing Office (2016-2024 + Microsoft 365)..." -ForegroundColor Magenta
     & $RemoveOfficeScript | ForEach-Object {
-        $color = if ($_ -match 'FAILED') { 'Red' } else { 'Green' }
+        $color = if ($_ -match 'FAILED') { 'Red' }
+                 elseif ($_ -match '\[stderr\]') { 'Yellow' }
+                 elseif ($_ -match ': OK\b') { 'Green' }
+                 else { 'Gray' }
         Write-Host "   $_" -ForegroundColor $color
     }
     Write-Host "`n[OK] Office removal finished." -ForegroundColor Green
