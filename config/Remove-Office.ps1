@@ -95,7 +95,10 @@ function Get-GetHelpCmd {
 function Invoke-GetHelpRemoval($ExePath) {
     # -CloseOffice is not a valid switch for OfficeScrubScenario (only for the
     # activation scenarios) - Office processes are stopped separately below.
-    $proc = Start-Process -FilePath $ExePath -ArgumentList "-S OfficeScrubScenario -AcceptEula -OfficeVersion All" -Wait -PassThru -NoNewWindow
+    # -OfficeVersion is documented on learn.microsoft.com but this build's own
+    # -Help output does not list it and rejects it as an invalid argument, so
+    # it is left out and GetHelpCmd auto-detects the installed version(s).
+    $proc = Start-Process -FilePath $ExePath -ArgumentList @('-S', 'OfficeScrubScenario', '-AcceptEula') -Wait -PassThru -NoNewWindow
     return $proc.ExitCode
 }
 
@@ -166,7 +169,8 @@ try {
             $exePath = Get-GetHelpCmd
             if ($exePath) {
                 $exitCode = Invoke-GetHelpRemoval $exePath
-                $removed = ($exitCode -eq 0)
+                # 0 = removed successfully, 68 = no Office installation found (nothing to do)
+                $removed = ($exitCode -eq 0 -or $exitCode -eq 68)
             }
         }
         $status.Removed = $removed

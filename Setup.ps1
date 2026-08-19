@@ -416,9 +416,11 @@ $RemoveOfficeScript = {
 
         if ($exe) {
             Write-Output "[Office] Found GetHelpCmd.exe at $($exe.FullName)"
-            # Array form, not one space-joined string: removes any ambiguity in
-            # how the tokens reach the child process's own argument parser.
-            $argArray = @('-S', 'OfficeScrubScenario', '-AcceptEula', '-OfficeVersion', 'All')
+            # -OfficeVersion is documented on learn.microsoft.com but this
+            # build's own -Help output does not list it and rejects it as an
+            # invalid argument - so it is left out and GetHelpCmd auto-detects
+            # whatever Office version(s) are actually installed instead.
+            $argArray = @('-S', 'OfficeScrubScenario', '-AcceptEula')
             Write-Output "[Office] Running: GetHelpCmd.exe $($argArray -join ' ')"
 
             if (Test-Path $GetHelp_OUT) { Remove-Item $GetHelp_OUT -Force -ErrorAction SilentlyContinue }
@@ -442,15 +444,20 @@ $RemoveOfficeScript = {
             if ($rejectedArgs) {
                 Write-Output "[Office] Force removal: FAILED - GetHelpCmd rejected the command line (see stdout above)"
             }
-            # 0 = success. 6 = an Office process was still running (shouldn't
-            # happen, they were stopped above). Anything else = failure; the
-            # raw code is logged since Microsoft's failure codes for this
-            # scenario aren't all publicly enumerated.
-            elseif ($proc.ExitCode -eq 0) {
-                Write-Output "[Office] Force removal: OK"
-            }
             else {
-                Write-Output "[Office] Force removal: FAILED - GetHelpCmd exit code $($proc.ExitCode)"
+                # Documented OfficeScrubScenario result codes (no -OfficeVersion):
+                # 0 = removed successfully. 68 = no Office found (nothing to do,
+                # not a failure). 8 = multiple versions found, needs the full GUI.
+                # 9 = failed to remove, needs the full GUI. 6 = an Office process
+                # was still running (shouldn't happen, they were stopped above).
+                # 10 = not elevated (shouldn't happen, this script requires admin).
+                switch ($proc.ExitCode) {
+                    0  { Write-Output "[Office] Force removal: OK" }
+                    68 { Write-Output "[Office] Force removal: OK (no Office installation found)" }
+                    8  { Write-Output "[Office] Force removal: FAILED - multiple Office versions detected, GetHelpCmd needs the full GUI tool for this machine" }
+                    9  { Write-Output "[Office] Force removal: FAILED - GetHelpCmd could not remove Office, needs the full GUI tool" }
+                    default { Write-Output "[Office] Force removal: FAILED - GetHelpCmd exit code $($proc.ExitCode)" }
+                }
             }
         }
         else {
