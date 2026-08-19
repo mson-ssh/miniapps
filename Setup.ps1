@@ -1581,7 +1581,6 @@ $MenuOptions = @(
     @{ Label = "System Information";        Desc = "Export hardware report to Desktop" },
     @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
     @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
-    @{ Label = "Remove Office";             Desc = "Force-remove Office 2016-2024 + Microsoft 365 (no reinstall)" },
     @{ Label = "Exit";                      Desc = "Close the tool" }
 )
 
@@ -1671,8 +1670,6 @@ function Read-MenuChoice {
             'NumPad5'   { return 4 }
             'D6'        { return 5 }
             'NumPad6'   { return 5 }
-            'D7'        { return 6 }
-            'NumPad7'   { return 6 }
             # A highlights Optimize Install; Enter then runs it
             'A'         { $selectedIndex = 4 }
         }
@@ -1691,8 +1688,7 @@ while ($true) {
         2 { Show-SystemInfo }
         3 { Invoke-Debloatware }
         4 { Invoke-OptimizeInstall }
-        5 { Invoke-RemoveOffice }
-        6 {
+        5 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
         }
