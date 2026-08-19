@@ -28,6 +28,24 @@ try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $Script:CanReposition = $false
 try { $Script:CanReposition = -not [Console]::IsOutputRedirected } catch { }
 
+# Enlarge the console window/buffer so the boxed UI has more room. Best
+# effort: some hosts (Windows Terminal in particular) reject buffer/window
+# resize requests outright, so this must never break the rest of the script.
+if ($Script:CanReposition) {
+    try {
+        $rawUI = $Host.UI.RawUI
+        $newWidth = 100
+        $newHeight = 32
+        # Buffer must be at least as large as the window on both axes, and
+        # has to grow before the window is resized or this throws.
+        $buffer = $rawUI.BufferSize
+        if ($buffer.Width -lt $newWidth) { $buffer.Width = $newWidth }
+        if ($buffer.Height -lt $newHeight) { $buffer.Height = $newHeight }
+        $rawUI.BufferSize = $buffer
+        $rawUI.WindowSize = New-Object System.Management.Automation.Host.Size($newWidth, $newHeight)
+    } catch { }
+}
+
 # Use rich glyphs only when the console can also reposition (a real terminal);
 # otherwise fall back to plain ASCII that renders anywhere.
 $Script:Glyph = if ($Script:CanReposition) {
@@ -777,7 +795,7 @@ function Invoke-WingetRescue {
 # =========================================================================
 # UI HELPERS - shared rendering primitives (glyphs, colors, boxes, bars)
 # =========================================================================
-$Script:UiWidth = 60
+$Script:UiWidth = 76
 
 function Get-StatusColor {
     param([string]$State)
