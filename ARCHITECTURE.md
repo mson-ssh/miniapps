@@ -39,8 +39,9 @@ Script kiểm tra `WindowsBuiltInRole::Administrator`. Nếu chưa có quyền:
 
 ### Giai đoạn 1b: Chọn bộ Office (chỉ chế độ Installer)
 
-`Read-OfficeChoice` hỏi máy/khách có bản quyền Office không. Có → giữ nguyên `Office 2024`.
-Không → `$WpsOffice` thay vào **đúng ô đó** của catalog, mọi thứ còn lại không đổi:
+`Read-OfficeChoice` hỏi máy/khách có bản quyền Office không, trả về `'Office'` / `'Wps'` /
+`'Cancel'`. Có → giữ nguyên `Office 2024`. Không → `$WpsOffice` thay vào **đúng ô đó** của
+catalog, mọi thứ còn lại không đổi:
 
 ```powershell
 $catalog = @($AppCatalog | ForEach-Object { if ($_.Name -eq "Office 2024") { $WpsOffice } else { $_ } })
@@ -49,7 +50,9 @@ $catalog = @($AppCatalog | ForEach-Object { if ($_.Name -eq "Office 2024") { $Wp
 Engine từ đây chỉ đọc `$catalog`, không đọc `$AppCatalog` nữa — bảng tiến trình, `$orderIndex`,
 rescue winget và thẻ tổng kết đều tự khớp theo lựa chọn.
 
-Hỏi trước khi `Start-Job` và trước khi tải, nên không có gì phải hủy giữa chừng. Phiên
+Lựa chọn thứ ba là **Cancel** (phím `3` hoặc `Esc`): thoát ngay, không đụng gì tới máy. Đây là
+chốt hủy duy nhất của menu 1 và 5 — hỏi trước khi `Start-Job` và trước khi tải, nên cancel còn
+kịp chặn cả Config/Disk lẫn Debloat. Qua khỏi điểm này thì không có gì hủy được nữa. Phiên
 non-interactive (output bị pipe/redirect) không bao giờ hỏi và giữ mặc định Office 2024 như cũ.
 
 WPS Office là bộ cài NSIS 3.05 nên tham số silent là `/S`; nó cài theo từng user vào
@@ -64,10 +67,20 @@ Job crash cũng được bắt và in lý do. Không có lỗi nào bị ẩn.
 
 ### Giai đoạn 3: Khởi tạo Winget (chỉ khi chọn menu Winget)
 
-`Initialize-Winget` cài Winget nếu thiếu (VCLibs + UI.Xaml + DesktopAppInstaller), bật
-`BypassCertificatePinningForMicrosoftStore`. **Chỉ được gọi khi `$Method = 'Winget'`.** Chế độ
-Installer tuyệt đối không đụng tới Winget — dựng Winget sẽ tải ~200MB appx và thay đổi máy khách
-mà không được hỏi. Nếu chọn Winget mà máy không dựng được, menu báo lỗi và thoát.
+`Initialize-Winget` cài Winget nếu thiếu, và **nâng cấp Winget cũ hơn `$Script:MinWingetVersion`
+(1.6)** — cả hai đi qua `Install-AppInstaller` (VCLibs + UI.Xaml + DesktopAppInstaller).
+Client cũ mang danh sách pinned certificate đã lỗi thời so với endpoint hiện tại, nên mọi lệnh
+chết với `0x8A15005E` bất kể tham số. Nâng cấp không thành công thì vẫn chạy tiếp bằng bản cũ:
+repo cộng đồng không bị pin nên vẫn còn cửa.
+
+Mọi lệnh winget đều ghim `--source winget`, và chỉ refresh đúng source đó
+(`winget source update --name winget`). Không có `--source`, winget phân giải id trên **mọi**
+source đã đăng ký, gồm `msstore` — nguồn duy nhất bị certificate pinning — nên một máy nằm sau
+SSL inspection hoặc proxy sẽ hỏng toàn bộ menu 2 dù không app nào cần tới Store.
+
+**Chỉ được gọi khi `$Method = 'Winget'`.** Chế độ Installer tuyệt đối không đụng tới Winget —
+dựng Winget sẽ tải ~200MB appx và thay đổi máy khách mà không được hỏi. Nếu chọn Winget mà máy
+không dựng được, menu báo lỗi và thoát.
 
 ### Giai đoạn 4: Engine tải & cài
 
@@ -131,15 +144,18 @@ cập nhật tại chỗ.
 `Invoke-OptimizeInstall` chạy menu 1 + 4 + 3 trong một lượt. Thứ tự có chủ đích:
 
 1. `Read-OfficeChoice` hỏi trước, ngay đầu — không có gì khởi động trước khi câu hỏi được trả lời.
+   Trả về `'Cancel'` thì `Invoke-OptimizeInstall` `return` ngay tại đây, **trước** `Start-Job` của
+   Debloat; nếu để cancel rơi xuống tận `Install-NecessaryApps` thì máy đã bị debloat mất rồi.
 2. `$DebloatScript` vào `Start-Job` → chạy **song song** với toàn bộ engine cài đặt.
-3. `Install-NecessaryApps -OfficeLicensed $licensed` chạy foreground, giữ độc quyền console.
+3. `Install-NecessaryApps -OfficeChoice $officeChoice` chạy foreground, giữ độc quyền console.
 4. Thu `$debloatJob` với cùng mốc `$JobTimeoutSec` như Config/Disk, in kết quả.
 5. `Show-SystemInfo` **cuối cùng**.
 
-Câu trả lời Office được truyền xuống qua tham số `-OfficeLicensed` thay vì hỏi lại. Tham số khai
-báo `[object]` chứ không phải `[bool]`: `$null` mang nghĩa "chưa ai hỏi, hỏi ngay bây giờ", còn
-`[bool]` sẽ âm thầm biến `$null` thành `$false` và bỏ Office mà không hỏi ai. Menu 1 gọi không kèm
-tham số nên vẫn tự hỏi như cũ.
+Câu trả lời Office được truyền xuống qua tham số `-OfficeChoice` thay vì hỏi lại. Tham số là
+`[string]` có `ValidateSet` chứ không phải `[bool]`: chuỗi rỗng mang nghĩa "chưa ai hỏi, hỏi ngay
+bây giờ", và cancel giữ được trạng thái riêng. Nhét cancel vào `[bool]` là sai — PowerShell ép
+chuỗi khác rỗng thành `$true`, nên `$true -eq 'Cancel'` cho ra True. Menu 1 gọi không kèm tham số
+nên vẫn tự hỏi như cũ.
 
 Hai điểm cố ý **không** chạy song song:
 

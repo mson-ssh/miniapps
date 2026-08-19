@@ -12,6 +12,10 @@ $ProgressPreference = 'SilentlyContinue'
 # Single source of truth for self-relaunch during UAC elevation
 $SelfUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1"
 
+# Derived from $SelfUrl rather than written out again, so repo and branch still
+# live on exactly one line. Feeds the "Update" stamp in the menu header.
+$CommitApiUrl = $SelfUrl -replace '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/.*$', 'https://api.github.com/repos/$1/$2/commits/$3'
+
 # =========================================================================
 # UI FOUNDATION - encoding, terminal capability detection, glyph set
 # Set first so even elevation errors render correctly.
@@ -512,15 +516,24 @@ function Test-IsInstalled {
     return $false
 }
 
-function Initialize-Winget {
-    # Winget is needed both for the Winget menu option and as the fallback path
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        & winget settings --enable BypassCertificatePinningForMicrosoftStore --accept-source-agreements 2>&1 | Out-Null
-        & winget source update --quiet 2>&1 | Out-Null
-        return $true
-    }
+# Winget older than this is not trusted. Older clients carry a pinned
+# certificate list that no longer matches the live Microsoft endpoints, so their
+# commands die with 0x8A15005E (APPINSTALLER_CLI_ERROR_PINNED_CERTIFICATE_MISMATCH)
+# no matter what arguments they are given.
+$Script:MinWingetVersion = [version]"1.6"
 
-    Write-Host "-> Winget not found. Starting silent Winget initialization..." -ForegroundColor Yellow
+function Get-WingetVersion {
+    # Major.minor of the installed client, or $null when winget is absent or its
+    # banner cannot be parsed. "winget --version" prints e.g. "v1.29.280".
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { return $null }
+    try { $raw = & winget --version 2>&1 } catch { return $null }
+    if ("$raw" -match '(\d+)\.(\d+)') { return [version]("{0}.{1}" -f $Matches[1], $Matches[2]) }
+    return $null
+}
+
+function Install-AppInstaller {
+    # Fetches App Installer (~200MB) plus its two framework packages from GitHub
+    # and registers them. Serves both a missing winget and one too old to trust.
     $tempDir = "$env:TEMP\MiniApp"
     if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
 
@@ -531,23 +544,54 @@ function Initialize-Winget {
 
         Add-AppxPackage -Path "$tempDir\VCLibs.appx" -ErrorAction SilentlyContinue
         Add-AppxPackage -Path "$tempDir\UiXaml.appx" -ErrorAction SilentlyContinue
-        Add-AppxPackage -Path "$tempDir\Winget.msixbundle" -ErrorAction SilentlyContinue
-        Remove-Item "$tempDir\VCLibs.appx", "$tempDir\UiXaml.appx", "$tempDir\Winget.msixbundle" -Force -ErrorAction SilentlyContinue
-
-        if (Get-Command winget -ErrorAction SilentlyContinue) {
-            & winget settings --enable BypassCertificatePinningForMicrosoftStore --accept-source-agreements 2>&1 | Out-Null
-            & winget source update --quiet 2>&1 | Out-Null
-            Write-Host "-> Winget initialized successfully." -ForegroundColor Gray
-            return $true
-        }
-        Write-Host "-> Winget initialization did not complete. Fallback will be unavailable." -ForegroundColor Yellow
-        return $false
+        # -ForceApplicationShutdown is what makes this an upgrade path and not just
+        # a first install: replacing an already registered App Installer fails
+        # while anything still holds it open.
+        Add-AppxPackage -Path "$tempDir\Winget.msixbundle" -ForceApplicationShutdown -ErrorAction SilentlyContinue
     }
     catch {
-        Remove-Item "$tempDir\VCLibs.appx", "$tempDir\UiXaml.appx", "$tempDir\Winget.msixbundle" -Force -ErrorAction SilentlyContinue
-        Write-Host "-> Winget initialization failed: $($_.Exception.Message)" -ForegroundColor Yellow
-        return $false
+        Write-Host "-> Winget download failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
+    finally {
+        Remove-Item "$tempDir\VCLibs.appx", "$tempDir\UiXaml.appx", "$tempDir\Winget.msixbundle" -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Initialize-Winget {
+    # Winget is needed both for the Winget menu option and as the fallback path
+    $ver = Get-WingetVersion
+
+    if ($null -eq $ver -or $ver -lt $Script:MinWingetVersion) {
+        if ($null -eq $ver) {
+            Write-Host "-> Winget not found. Starting silent Winget initialization..." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "-> Winget $ver is older than $($Script:MinWingetVersion). Upgrading (~200MB)..." -ForegroundColor Yellow
+        }
+
+        Install-AppInstaller
+        $ver = Get-WingetVersion
+
+        if ($null -eq $ver) {
+            Write-Host "-> Winget initialization did not complete. Fallback will be unavailable." -ForegroundColor Yellow
+            return $false
+        }
+        # An upgrade that did not take is not fatal. The community repo is not
+        # certificate-pinned, so the old client is still worth running.
+        if ($ver -lt $Script:MinWingetVersion) {
+            Write-Host "-> Winget is still $ver. Continuing with it anyway." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "-> Winget $ver initialized successfully." -ForegroundColor Gray
+        }
+    }
+
+    # Refresh the community repo only. A bare "winget source update" also pulls
+    # msstore - the one source winget certificate-pins - which fails with
+    # 0x8A15005E behind SSL inspection, a proxy, or an outdated client, and takes
+    # the whole command down with it.
+    & winget source update --name winget --disable-interactivity 2>&1 | Out-Null
+    return $true
 }
 
 function Invoke-WingetRescue {
@@ -565,8 +609,8 @@ function Invoke-WingetRescue {
 
     foreach ($app in $Apps) {
         Write-Host ("  {0} Retrying {1} via Winget..." -f $Script:Glyph.Run, $app.Name) -ForegroundColor Cyan
-        $wingetArgs = "install --id $($app.WingetId) --exact --silent --disable-interactivity " +
-                      "--accept-package-agreements --accept-source-agreements"
+        $wingetArgs = "install --id $($app.WingetId) --exact --source winget --silent " +
+                      "--disable-interactivity --accept-package-agreements --accept-source-agreements"
         try {
             $proc = Start-Process winget -ArgumentList $wingetArgs -PassThru -WindowStyle Hidden -Wait
             $code = try { $proc.ExitCode } catch { $null }
@@ -625,6 +669,14 @@ function Write-BoxLine {
     Write-Host ("{0}{1}{0}" -f $Script:Glyph.V, $Text.PadRight($inner)) -ForegroundColor $Color
 }
 
+function Write-BoxCenter {
+    # Same frame as Write-BoxLine, text centred in the box interior
+    param([string]$Text = "", [string]$Color = "Gray")
+    $inner = $Script:UiWidth - 2
+    if ($Text.Length -lt $inner) { $Text = (" " * [int](($inner - $Text.Length) / 2)) + $Text }
+    Write-BoxLine $Text $Color
+}
+
 function Write-BoxTop    { Write-Host ($Script:Glyph.TL + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.TR) -ForegroundColor Cyan }
 function Write-BoxBottom { Write-Host ($Script:Glyph.BL + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.BR) -ForegroundColor Cyan }
 function Write-BoxSep    { Write-Host ($Script:Glyph.V + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.V) -ForegroundColor DarkCyan }
@@ -639,16 +691,20 @@ function Read-OfficeChoice {
     # Office 2024 is only allowed on licensed machines; everything else gets
     # WPS Office. Asked once, before a single byte is downloaded.
     # Same navigation as the main menu: arrows + Enter, or a number key.
-    # Returns $true for licensed (Office 2024), $false for WPS Office.
+    # Returns 'Office', 'Wps', or 'Cancel'. Strings, not a bool: cancel is a
+    # third outcome, and squeezing it into a bool compares wrong - PowerShell
+    # casts a non-empty string to $true, so $true -eq 'Cancel' is True.
     $options = @(
         @{ Label = "Yes - install Office 2024"; Desc = "Customer / model holds an Office licence" },
-        @{ Label = "No  - install WPS Office";  Desc = "No licence - WPS Office takes the Office slot" }
+        @{ Label = "No  - install WPS Office";  Desc = "No licence - WPS Office takes the Office slot" },
+        @{ Label = "Cancel";                    Desc = "Change nothing and go back to the menu" }
     )
+    $results = @('Office', 'Wps', 'Cancel')
 
     if (-not $Script:CanReposition) {
         # Non-interactive (piped/redirected): never block, keep the old default
         Write-Host "`n[Office] Non-interactive session - defaulting to Office 2024." -ForegroundColor DarkGray
-        return $true
+        return 'Office'
     }
 
     $selected = 0
@@ -673,7 +729,7 @@ function Read-OfficeChoice {
             }
         }
         Write-Host ""
-        Write-Host "  Up/Down + Enter, or press a number key." -ForegroundColor DarkGray
+        Write-Host "  Up/Down + Enter, a number key, or Esc to cancel." -ForegroundColor DarkGray
 
         switch ([System.Console]::ReadKey($true).Key) {
             'UpArrow'   { $selected = ($selected - 1 + $options.Count) % $options.Count }
@@ -683,12 +739,16 @@ function Read-OfficeChoice {
             'NumPad1'   { $choice = 0 }
             'D2'        { $choice = 1 }
             'NumPad2'   { $choice = 1 }
+            'D3'        { $choice = 2 }
+            'NumPad3'   { $choice = 2 }
+            # Escape cancels, the same way it exits the main menu
+            'Escape'    { $choice = 2 }
         }
 
         if ($null -ne $choice) {
             # Clear so the install table starts at the top of a clean screen
             Clear-Host
-            return ($choice -eq 0)
+            return $results[$choice]
         }
     }
 }
@@ -701,16 +761,23 @@ function Read-OfficeChoice {
 function Install-NecessaryApps {
     param(
         [ValidateSet('Installer', 'Winget')][string]$Method = 'Installer',
-        # [object], not [bool]: $null means "nobody asked yet, ask now". A [bool]
-        # would quietly turn that into $false and drop Office without asking.
-        [object]$OfficeLicensed = $null
+        # Empty means "nobody asked yet, ask now"; the rest are what
+        # Read-OfficeChoice returns. Kept out of [bool] so cancelling stays a
+        # state of its own instead of being read as "no licence".
+        [ValidateSet('', 'Office', 'Wps', 'Cancel')][string]$OfficeChoice = ''
     )
 
     # WPS Office takes over the Office 2024 slot when the machine has no licence
     $catalog = $AppCatalog
     if ($Method -eq 'Installer') {
-        if ($null -eq $OfficeLicensed) { $OfficeLicensed = Read-OfficeChoice }
-        if (-not $OfficeLicensed) {
+        if (-not $OfficeChoice) { $OfficeChoice = Read-OfficeChoice }
+        # Bail before the first Start-Job: cancel has to leave the machine
+        # exactly as it was, and Config/Disk repartition C: the moment they run.
+        if ($OfficeChoice -eq 'Cancel') {
+            Write-Host "`n[Cancelled] Nothing was installed or changed." -ForegroundColor Yellow
+            return
+        }
+        if ($OfficeChoice -eq 'Wps') {
             $catalog = @($AppCatalog | ForEach-Object { if ($_.Name -eq "Office 2024") { $WpsOffice } else { $_ } })
         }
     }
@@ -979,7 +1046,11 @@ function Install-NecessaryApps {
             try {
                 $proc = $null
                 if ($installMode[$key] -eq 'Winget') {
-                    $wingetArgs = "install --id $($app.WingetId) --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements"
+                    # --source winget is not optional: without it winget resolves the id
+                    # against every configured source, msstore included, and the pinned
+                    # certificate check there fails with 0x8A15005E on some networks even
+                    # though every id in the catalog lives in the community repo.
+                    $wingetArgs = "install --id $($app.WingetId) --exact --source winget --silent --disable-interactivity --accept-package-agreements --accept-source-agreements"
                     # -WindowStyle Hidden, not -NoNewWindow: with -NoNewWindow the
                     # returned process object reports a null ExitCode even after exit.
                     $proc = Start-Process winget -ArgumentList $wingetArgs -PassThru -WindowStyle Hidden
@@ -1074,12 +1145,17 @@ function Install-NecessaryApps {
                 foreach ($r in $unrescuable) { Write-BoxLine ("      - {0}" -f $r.Name) "DarkGray" }
             }
             Write-BoxSep
-            if (Get-Command winget -ErrorAction SilentlyContinue) {
-                Write-BoxLine "  Winget is available on this machine." "Gray"
-            }
-            else {
+            $wingetVer = Get-WingetVersion
+            if ($null -eq $wingetVer) {
                 Write-BoxLine "  Winget is NOT installed. Continuing will" "Yellow"
                 Write-BoxLine "  download and install it (~200MB)." "Yellow"
+            }
+            elseif ($wingetVer -lt $Script:MinWingetVersion) {
+                Write-BoxLine ("  Winget {0} is too old to trust. Continuing" -f $wingetVer) "Yellow"
+                Write-BoxLine "  will download and upgrade it (~200MB)." "Yellow"
+            }
+            else {
+                Write-BoxLine ("  Winget {0} is available on this machine." -f $wingetVer) "Gray"
             }
             Write-BoxBottom
 
@@ -1220,12 +1296,18 @@ function Invoke-OptimizeInstall {
     # Menu 1 + 4 + 3 off a single keypress. The Office question is asked here
     # instead of inside the engine so everything starts only after it is
     # answered, and the answer is handed down rather than asked twice.
-    $licensed = Read-OfficeChoice
+    $officeChoice = Read-OfficeChoice
+    # Return before the debloat job starts, not just before the installs: menu 5
+    # would otherwise still debloat and repartition a machine the user cancelled.
+    if ($officeChoice -eq 'Cancel') {
+        Write-Host "`n[Cancelled] Nothing was installed or changed." -ForegroundColor Yellow
+        return
+    }
 
     Write-Host "`n[System] Starting Debloat in the background..." -ForegroundColor Magenta
     $debloatJob = Start-Job -ScriptBlock $DebloatScript
 
-    Install-NecessaryApps -Method 'Installer' -OfficeLicensed $licensed
+    Install-NecessaryApps -Method 'Installer' -OfficeChoice $officeChoice
 
     # Bounded like the Config/Disk jobs: a wedged debloat must not strand the run
     Write-Host "`n[System] Waiting for the Debloat job to finish..." -ForegroundColor Cyan
@@ -1268,7 +1350,24 @@ function Get-MenuContext {
     $os = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption -replace 'Microsoft ', ''
     $cFree = try { [math]::Round((Get-Volume -DriveLetter C -ErrorAction Stop).SizeRemaining / 1GB) } catch { "?" }
     $net = try { if (Test-Connection 1.1.1.1 -Count 1 -Quiet -ErrorAction SilentlyContinue) { "Online" } else { "Offline" } } catch { "?" }
-    return @{ Host = $env:COMPUTERNAME; OS = $os; CFree = $cFree; Net = $net }
+
+    # When the repo was last pushed, so a technician can see at a glance whether
+    # this machine pulled a current Setup.ps1. Best-effort and time-boxed: a slow
+    # or rate-limited GitHub must never hold the menu hostage.
+    $updated = try {
+        $head = Invoke-RestMethod -Uri $CommitApiUrl -TimeoutSec 5 -UseBasicParsing `
+                                  -Headers @{ 'User-Agent' = 'MiniApp' } -ErrorAction Stop
+        $stamp = $head.commit.committer.date
+        # PowerShell 5.1 already turns the ISO-8601 field into [datetime] while
+        # newer hosts hand back the raw string. Normalise, or the stamp is off by
+        # a whole timezone. ToLocalTime is a no-op on an already-local value.
+        if ($stamp -isnot [datetime]) {
+            $stamp = [datetime]::Parse($stamp, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        }
+        $stamp.ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+    } catch { "unknown" }
+
+    return @{ Host = $env:COMPUTERNAME; OS = $os; CFree = $cFree; Net = $net; Updated = $updated }
 }
 
 function Show-Menu {
@@ -1276,10 +1375,19 @@ function Show-Menu {
 
     Clear-Host
     Write-BoxTop
-    Write-BoxLine "  MINIAPP  -  Windows Setup Tool" "White"
+    Write-BoxCenter "MINIAPP  -  Windows Setup Tool" "White"
     Write-BoxSep
-    Write-BoxLine ("  Host: {0}   C: {1}GB free   Net: {2}" -f $Ctx.Host, $Ctx.CFree, $Ctx.Net) "DarkGray"
-    Write-BoxLine ("  {0}" -f $Ctx.OS) "DarkGray"
+    # Two spaces between fields, not three: a 15-char hostname plus "Offline"
+    # overruns the 58-column interior at three and loses its last letter.
+    Write-BoxLine ("  Host: {0}  Disk C: {1}GB free  Net: {2}" -f $Ctx.Host, $Ctx.CFree, $Ctx.Net) "DarkGray"
+    # Update sits hard right and the OS caption is what gives way, not the other
+    # way round: "Windows 10 Enterprise LTSC 2021" is long enough to shove the
+    # timestamp off the edge, and the timestamp is the half worth keeping.
+    $stamp  = "  Update: {0} " -f $Ctx.Updated
+    $osCell = $Script:UiWidth - 2 - $stamp.Length
+    $osText = "  {0}" -f $Ctx.OS
+    if ($osText.Length -gt $osCell) { $osText = $osText.Substring(0, $osCell) }
+    Write-BoxLine ($osText.PadRight($osCell) + $stamp) "DarkGray"
     Write-BoxBottom
     Write-Host ""
 

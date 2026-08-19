@@ -20,6 +20,7 @@ thông tin phần cứng đã được nhúng sẵn bên trong.
 ### 1. Install App with Installer
 - **Hỏi bản quyền Office trước khi chạy**: máy/khách có bản quyền thì cài Office 2024, không có
   thì WPS Office thế vào đúng vị trí đó trong danh sách. Hỏi một lần, trước khi tải bất cứ thứ gì.
+  Có lựa chọn thứ ba là **Cancel** (phím `3` hoặc `Esc`) để thoát mà không đụng gì tới máy.
 - **Cấu hình Windows & chia ổ đĩa chạy ngầm**: song song với quá trình cài phần mềm. Kết quả
   từng mục được in ra cuối cùng (kể cả khi thất bại), không im lặng bỏ qua.
 - **Smart Skip**: quét Registry (và cả thư mục AppData cho Zalo/Telegram). Phần mềm đã có sẵn
@@ -32,7 +33,8 @@ thông tin phần cứng đã được nhúng sẵn bên trong.
 - **Thử lại cùng nguồn**: link tải chết hoặc treo (canh đình trệ 90s) thì thử lại chính link đó
   tối đa 3 lần trước khi báo lỗi. Không tự đổi sang winget — mọi máy nhận cùng một bản cài.
 - **Rescue winget tùy chọn**: cuối lượt, nếu còn app lỗi mà có Winget ID, script *hỏi* có muốn
-  thử lại qua winget không. Mặc định Không. Máy chưa có winget sẽ được báo trước cái giá ~200MB.
+  thử lại qua winget không. Mặc định Không. Máy chưa có winget — hoặc đang có bản cũ cần nâng
+  cấp — sẽ được báo trước cái giá ~200MB.
 - **Giao diện tự thích ứng**: bảng tiến trình có ký hiệu và màu theo trạng thái, % tải trực tiếp,
   thanh tiến trình tổng và thẻ tổng kết cuối. Terminal hiện đại dùng ký tự Unicode, console cũ tự
   hạ cấp sang ASCII. Ghi log phiên ra `Desktop\MiniApp-log.txt`.
@@ -46,6 +48,10 @@ Office 2024 (hoặc WPS Office), VC++ Redistributable x64 & x86*.
 ### 2. Install App with Winget
 Cài toàn bộ qua Winget thay vì Direct Link. App nào không có Winget ID vẫn dùng Direct Link.
 Nếu Winget không cài được trên máy, menu này báo lỗi và thoát thay vì chạy vô ích.
+
+Mọi lệnh đều ghim `--source winget` để không bao giờ chạm vào nguồn `msstore` — đó là nguồn duy
+nhất bị certificate pinning, và máy nằm sau SSL inspection, proxy, hoặc dùng winget cũ sẽ hỏng
+với mã `0x8A15005E`. Winget cũ hơn 1.6 được tự nâng cấp trước (~200MB).
 
 ### 3. Information
 Trích xuất thông tin phần cứng (Model, Serial, CPU, RAM, Disk, GPU, độ phân giải), xuất ra
@@ -61,7 +67,8 @@ Chạy [Win11Debloat](https://github.com/raphire/win11debloat) ở chế độ `
 ### 5. Optimize Install
 Gộp mục 1 + 4 + 3 vào một phím. Chọn bằng số `5`, bằng mũi tên, hoặc gõ `A` rồi Enter.
 
-Hỏi bản quyền Office trước, xong mới khởi động mọi thứ. **Debloat chạy song song** với quá trình
+Hỏi bản quyền Office trước, xong mới khởi động mọi thứ. Chọn **Cancel** ở câu hỏi này thì thoát
+ngay, chưa có gì chạy — kể cả Debloat. **Debloat chạy song song** với quá trình
 cài phần mềm (dạng background job như Config/Disk), kết quả in ra sau. Báo cáo phần cứng chạy
 **cuối cùng** — cố ý, vì shortcut Word/Excel/PowerPoint cần bộ Office vừa cài đã nằm trên đĩa,
 và Notepad không được bật đè lên bảng tiến trình đang vẽ.
@@ -70,7 +77,9 @@ và Notepad không được bật đè lên bảng tiến trình đang vẽ.
 
 ## Lưu ý quan trọng
 
-Menu 1, 2 và 5 sẽ **tự động thực hiện các thay đổi khó hoàn tác** ngay khi chọn, không hỏi lại:
+Menu 1, 2 và 5 sẽ **tự động thực hiện các thay đổi khó hoàn tác**, không hỏi lại từng mục. Menu 1
+và 5 dừng được ở câu hỏi bản quyền Office bằng **Cancel**; qua khỏi đó, và với menu 2 thì ngay từ
+đầu, mọi thứ dưới đây chạy thẳng:
 
 - Chia lại phân vùng ổ C: (shrink C:, tạo D:/E:) — có các chốt an toàn: bỏ qua nếu ổ > 1100GB,
   bỏ qua nếu D:/E: đã tồn tại, hủy nếu C: còn dưới 30GB, và **giải mã BitLocker** trên C:
