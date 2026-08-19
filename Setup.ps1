@@ -357,6 +357,55 @@ $DiskScript = {
 }
 
 # =========================================================================
+# EMBEDDED: OFFICE FORCE REMOVAL (was config/Remove-Office.ps1)
+# Runs as a background job only when the machine has no Office licence and
+# WPS Office is taking the Office slot. Uses Microsoft's own SaRA
+# (Support and Recovery Assistant) OfficeScrubScenario - the same engine
+# Microsoft support uses to clean up a broken/leftover Office install -
+# so no third-party binary needs to ship inside this single-file script.
+# =========================================================================
+$RemoveOfficeScript = {
+    $ProgressPreference = 'SilentlyContinue'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $SaRA_URL = "https://aka.ms/SaRA_CommandLineVersionFiles"
+    $SaRA_ZIP = "$env:TEMP\SaRA.zip"
+    $SaRA_DIR = "$env:TEMP\SaRA"
+    $SaRA_EXE = "$SaRA_DIR\SaRAcmd.exe"
+    $OfficeProcesses = "lync", "winword", "excel", "msaccess", "mstore", "infopath", "setlang", "msouc", "ois", "onenote", "outlook", "powerpnt", "mspub", "groove", "visio", "winproj", "graph", "teams"
+
+    foreach ($name in $OfficeProcesses) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+
+    try {
+        if (Test-Path $SaRA_ZIP) { Remove-Item $SaRA_ZIP -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $SaRA_DIR) { Remove-Item $SaRA_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -Path $SaRA_DIR -ItemType Directory -Force | Out-Null
+
+        Start-BitsTransfer -Source $SaRA_URL -Destination $SaRA_ZIP -ErrorAction Stop
+        Expand-Archive -Path $SaRA_ZIP -DestinationPath $SaRA_DIR -Force
+        if (Test-Path "$SaRA_DIR\DONE") { Move-Item "$SaRA_DIR\DONE\*" $SaRA_DIR -Force }
+
+        if (Test-Path $SaRA_EXE) {
+            $proc = Start-Process -FilePath $SaRA_EXE -ArgumentList "-S OfficeScrubScenario -AcceptEula -CloseOffice -OfficeVersion All" -Wait -PassThru -NoNewWindow
+            switch ($proc.ExitCode) {
+                0 { Write-Output "[Office] Force removal: OK" }
+                7 { Write-Output "[Office] Force removal: OK (no existing installation found)" }
+                default { Write-Output "[Office] Force removal: FAILED - SaRA exit code $($proc.ExitCode)" }
+            }
+        }
+        else {
+            Write-Output "[Office] Force removal: FAILED - SaRA download did not produce SaRAcmd.exe"
+        }
+    }
+    catch { Write-Output "[Office] Force removal: FAILED - $($_.Exception.Message)" }
+    finally {
+        if (Test-Path $SaRA_ZIP) { Remove-Item $SaRA_ZIP -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $SaRA_DIR) { Remove-Item $SaRA_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =========================================================================
 # EMBEDDED: DEBLOATWARE
 # Job form of Invoke-Debloatware, used by Optimize Install so the debloat pass
 # runs while apps install. Win11Debloat's own chatter is swallowed so it cannot
@@ -785,7 +834,19 @@ function Install-NecessaryApps {
     Write-Host "`n[System] Starting Config and Disk setup in the background..." -ForegroundColor Magenta
     $configJob = Start-Job -ScriptBlock $ConfigScript
     $diskJob = Start-Job -ScriptBlock $DiskScript
-    Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
+    $backgroundJobs = @($configJob, $diskJob)
+
+    # No Office licence: WPS took the Office slot above, and the machine's
+    # existing Office install (if any) gets force-removed in the background
+    # too, so the customer never ends up with both WPS and a stale Office.
+    if ($OfficeChoice -eq 'Wps') {
+        $removeOfficeJob = Start-Job -ScriptBlock $RemoveOfficeScript
+        $backgroundJobs += $removeOfficeJob
+        Write-Host "-> Background jobs activated (Config, Disk, Office Removal)." -ForegroundColor Gray
+    }
+    else {
+        Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
+    }
 
     # Installer mode must not touch Winget: bootstrapping it would download
     # ~200MB of appx and change the client machine without being asked. Winget
@@ -797,12 +858,12 @@ function Install-NecessaryApps {
         if (-not $wingetReady) {
             Write-Host "`n[ERROR] Winget is unavailable, so the Winget method cannot run." -ForegroundColor Red
             Write-Host "        Use option 1 (Installer) instead." -ForegroundColor Yellow
-            Wait-Job $configJob, $diskJob -Timeout $Script:JobTimeoutSec | Out-Null
-            foreach ($j in @($configJob, $diskJob)) {
+            Wait-Job $backgroundJobs -Timeout $Script:JobTimeoutSec | Out-Null
+            foreach ($j in $backgroundJobs) {
                 if ($j.State -eq 'Running') { Stop-Job -Job $j -ErrorAction SilentlyContinue }
             }
-            Receive-Job $configJob, $diskJob | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-            Remove-Job $configJob, $diskJob -Force | Out-Null
+            Receive-Job $backgroundJobs | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+            Remove-Job $backgroundJobs -Force | Out-Null
             return
         }
     }
@@ -1100,9 +1161,9 @@ function Install-NecessaryApps {
 
     # --- Wait for background jobs and report what they actually did ---
     # Bounded: a wedged job (disk/BitLocker) must not strand the whole run.
-    Write-Host "`n[System] Waiting for Config and Disk jobs to finish..." -ForegroundColor Cyan
-    Wait-Job $configJob, $diskJob -Timeout $Script:JobTimeoutSec | Out-Null
-    foreach ($job in @($configJob, $diskJob)) {
+    Write-Host "`n[System] Waiting for background jobs to finish..." -ForegroundColor Cyan
+    Wait-Job $backgroundJobs -Timeout $Script:JobTimeoutSec | Out-Null
+    foreach ($job in $backgroundJobs) {
         if ($job.State -eq 'Running') {
             Write-Host ("   [!] Job '{0}' still running after {1} min - stopping it." -f
                 $job.Name, [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
@@ -1111,7 +1172,7 @@ function Install-NecessaryApps {
     }
 
     Write-Host "`n[Background Results]" -ForegroundColor Cyan
-    foreach ($job in @($configJob, $diskJob)) {
+    foreach ($job in $backgroundJobs) {
         $lines = Receive-Job -Job $job
         foreach ($line in $lines) {
             $color = if ($line -match 'FAILED|ABORTED') { 'Red' }
@@ -1123,7 +1184,7 @@ function Install-NecessaryApps {
             Write-Host "   [!] Job '$($job.Name)' crashed: $($job.ChildJobs[0].JobStateInfo.Reason.Message)" -ForegroundColor Red
         }
     }
-    Remove-Job $configJob, $diskJob -Force | Out-Null
+    Remove-Job $backgroundJobs -Force | Out-Null
 
     # --- Optional Winget rescue pass (Installer mode, opt-in) ---
     # Nothing switches package managers without being asked. Only apps that
