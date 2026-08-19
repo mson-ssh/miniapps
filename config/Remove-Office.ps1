@@ -5,8 +5,11 @@
 # Purpose:
 # - Force-remove all Microsoft Office installations (MSI + Click-to-Run),
 #   including installs that cannot be uninstalled through normal means.
-# - Primary method : Microsoft SaRA (Support and Recovery Assistant) command-line,
-#                     OfficeScrubScenario — official Microsoft removal engine.
+# - Primary method : Microsoft's command-line Get Help tool, OfficeScrubScenario —
+#                     official Microsoft removal engine. This tool used to be
+#                     called SaRA (Support and Recovery Assistant) and shipped as
+#                     SaRAcmd.exe; Microsoft retired that build, it is now
+#                     GetHelpCmd.exe from aka.ms/SaRA_EnterpriseVersionFiles.
 # - Alternate method: Office Deployment Tool (ODT) setup.exe /configure purge.xml
 #                     (-UseSetupRemoval). ODT assets are bundled locally in
 #                     .\OfficeRemoval so no third-party download is required.
@@ -25,10 +28,9 @@ param(
 )
 
 # ----------------------------- CONFIGURATION ------------------------------------
-$SaRA_URL    = "https://aka.ms/SaRA_CommandLineVersionFiles"
-$SaRA_ZIP    = "$env:TEMP\SaRA.zip"
-$SaRA_DIR    = "$env:TEMP\SaRA"
-$SaRA_EXE    = "$SaRA_DIR\SaRAcmd.exe"
+$GetHelp_URL = "https://aka.ms/SaRA_EnterpriseVersionFiles"
+$GetHelp_ZIP = "$env:TEMP\GetHelpCmd.zip"
+$GetHelp_DIR = "$env:TEMP\GetHelpCmd"
 
 # Local Office Deployment Tool assets (bundled — no external download dependency)
 $AssetsDir   = "$PSScriptRoot\OfficeRemoval"
@@ -74,24 +76,26 @@ function Stop-OfficeProcess {
     }
 }
 
-function Remove-SaRAFiles {
-    if (Test-Path $SaRA_ZIP) { Remove-Item $SaRA_ZIP -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $SaRA_DIR) { Remove-Item $SaRA_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+function Remove-GetHelpFiles {
+    if (Test-Path $GetHelp_ZIP) { Remove-Item $GetHelp_ZIP -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-function Get-SaRA {
-    Remove-SaRAFiles
-    New-Item -Path $SaRA_DIR -ItemType Directory -Force | Out-Null
-    Start-BitsTransfer -Source $SaRA_URL -Destination $SaRA_ZIP -ErrorAction Stop
-    Expand-Archive -Path $SaRA_ZIP -DestinationPath $SaRA_DIR -Force
-    if (Test-Path "$SaRA_DIR\DONE") {
-        Move-Item "$SaRA_DIR\DONE\*" $SaRA_DIR -Force
-    }
-    return (Test-Path $SaRA_EXE)
+function Get-GetHelpCmd {
+    Remove-GetHelpFiles
+    New-Item -Path $GetHelp_DIR -ItemType Directory -Force | Out-Null
+    Start-BitsTransfer -Source $GetHelp_URL -Destination $GetHelp_ZIP -ErrorAction Stop
+    Expand-Archive -Path $GetHelp_ZIP -DestinationPath $GetHelp_DIR -Force
+    # Search instead of assuming a fixed subfolder: Microsoft has changed the
+    # zip layout before (used to nest everything under a DONE\ folder).
+    $exe = Get-ChildItem -Path $GetHelp_DIR -Filter "GetHelpCmd.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    return $exe.FullName
 }
 
-function Invoke-SaRARemoval {
-    $proc = Start-Process -FilePath $SaRA_EXE -ArgumentList "-S OfficeScrubScenario -AcceptEula -CloseOffice -OfficeVersion All" -Wait -PassThru -NoNewWindow
+function Invoke-GetHelpRemoval($ExePath) {
+    # -CloseOffice is not a valid switch for OfficeScrubScenario (only for the
+    # activation scenarios) - Office processes are stopped separately below.
+    $proc = Start-Process -FilePath $ExePath -ArgumentList "-S OfficeScrubScenario -AcceptEula -OfficeVersion All" -Wait -PassThru -NoNewWindow
     return $proc.ExitCode
 }
 
@@ -159,14 +163,14 @@ try {
             $removed = Invoke-ODTRemoval
         }
         else {
-            if (Get-SaRA) {
-                $exitCode = Invoke-SaRARemoval
-                # 0 = removed successfully, 7 = no Office installation found (nothing to do)
-                $removed = ($exitCode -eq 0 -or $exitCode -eq 7)
+            $exePath = Get-GetHelpCmd
+            if ($exePath) {
+                $exitCode = Invoke-GetHelpRemoval $exePath
+                $removed = ($exitCode -eq 0)
             }
         }
         $status.Removed = $removed
-        Remove-SaRAFiles
+        Remove-GetHelpFiles
 
         if (-not $removed) {
             Clear-Stage
@@ -183,7 +187,7 @@ try {
     }
     else {
         $status.Reinstalled = Invoke-ODTReinstall
-        Remove-SaRAFiles
+        Remove-GetHelpFiles
         Clear-Stage
         Invoke-PendingReboot $SecondsToReboot
     }
@@ -199,5 +203,5 @@ catch {
 # ================================================================================
 # 0  = completed (removal succeeded; reinstall succeeded if -InstallOffice365 was resumed)
 # 1  = unexpected error during removal / reinstall
-# 3  = removal failed (SaRA and/or ODT purge method reported failure)
+# 3  = removal failed (GetHelpCmd and/or ODT purge method reported failure)
 # 10 = administrator privilege required

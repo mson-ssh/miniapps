@@ -359,18 +359,23 @@ $DiskScript = {
 # =========================================================================
 # EMBEDDED: OFFICE FORCE REMOVAL (was config/Remove-Office.ps1)
 # Runs as a background job only when the machine has no Office licence and
-# WPS Office is taking the Office slot. Uses Microsoft's own SaRA
-# (Support and Recovery Assistant) OfficeScrubScenario - the same engine
-# Microsoft support uses to clean up a broken/leftover Office install -
-# so no third-party binary needs to ship inside this single-file script.
+# WPS Office is taking the Office slot. Uses Microsoft's own command-line
+# Get Help tool, OfficeScrubScenario - the same engine Microsoft support
+# uses to clean up a broken/leftover Office install - so no third-party
+# binary needs to ship inside this single-file script.
+# NOTE: this tool used to be called SaRA (Support and Recovery Assistant)
+# and shipped as SaRAcmd.exe from aka.ms/SaRA_CommandLineVersionFiles.
+# Microsoft retired that build; it is now GetHelpCmd.exe from
+# aka.ms/SaRA_EnterpriseVersionFiles, and -CloseOffice is not a valid
+# switch for OfficeScrubScenario (Office processes are stopped below
+# instead - GetHelp just aborts with code 6 if any are still running).
 # =========================================================================
 $RemoveOfficeScript = {
     $ProgressPreference = 'SilentlyContinue'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $SaRA_URL = "https://aka.ms/SaRA_CommandLineVersionFiles"
-    $SaRA_ZIP = "$env:TEMP\SaRA.zip"
-    $SaRA_DIR = "$env:TEMP\SaRA"
-    $SaRA_EXE = "$SaRA_DIR\SaRAcmd.exe"
+    $GetHelp_URL  = "https://aka.ms/SaRA_EnterpriseVersionFiles"
+    $GetHelp_ZIP  = "$env:TEMP\GetHelpCmd.zip"
+    $GetHelp_DIR  = "$env:TEMP\GetHelpCmd"
     $OfficeProcesses = "lync", "winword", "excel", "msaccess", "mstore", "infopath", "setlang", "msouc", "ois", "onenote", "outlook", "powerpnt", "mspub", "groove", "visio", "winproj", "graph", "teams"
 
     foreach ($name in $OfficeProcesses) {
@@ -378,30 +383,38 @@ $RemoveOfficeScript = {
     }
 
     try {
-        if (Test-Path $SaRA_ZIP) { Remove-Item $SaRA_ZIP -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $SaRA_DIR) { Remove-Item $SaRA_DIR -Recurse -Force -ErrorAction SilentlyContinue }
-        New-Item -Path $SaRA_DIR -ItemType Directory -Force | Out-Null
+        if (Test-Path $GetHelp_ZIP) { Remove-Item $GetHelp_ZIP -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -Path $GetHelp_DIR -ItemType Directory -Force | Out-Null
 
-        Start-BitsTransfer -Source $SaRA_URL -Destination $SaRA_ZIP -ErrorAction Stop
-        Expand-Archive -Path $SaRA_ZIP -DestinationPath $SaRA_DIR -Force
-        if (Test-Path "$SaRA_DIR\DONE") { Move-Item "$SaRA_DIR\DONE\*" $SaRA_DIR -Force }
+        Start-BitsTransfer -Source $GetHelp_URL -Destination $GetHelp_ZIP -ErrorAction Stop
+        Expand-Archive -Path $GetHelp_ZIP -DestinationPath $GetHelp_DIR -Force
 
-        if (Test-Path $SaRA_EXE) {
-            $proc = Start-Process -FilePath $SaRA_EXE -ArgumentList "-S OfficeScrubScenario -AcceptEula -CloseOffice -OfficeVersion All" -Wait -PassThru -NoNewWindow
-            switch ($proc.ExitCode) {
-                0 { Write-Output "[Office] Force removal: OK" }
-                7 { Write-Output "[Office] Force removal: OK (no existing installation found)" }
-                default { Write-Output "[Office] Force removal: FAILED - SaRA exit code $($proc.ExitCode)" }
+        # Search instead of assuming a fixed subfolder: Microsoft has changed
+        # the zip layout before (used to nest everything under a DONE\ folder).
+        $exe = Get-ChildItem -Path $GetHelp_DIR -Filter "GetHelpCmd.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+
+        if ($exe) {
+            $proc = Start-Process -FilePath $exe.FullName -ArgumentList "-S OfficeScrubScenario -AcceptEula -OfficeVersion All" -Wait -PassThru -NoNewWindow
+            # 0 = success. 6 = an Office process was still running (shouldn't
+            # happen, they were stopped above). Anything else = failure; the
+            # raw code is logged since Microsoft's failure codes for this
+            # scenario aren't all publicly enumerated.
+            if ($proc.ExitCode -eq 0) {
+                Write-Output "[Office] Force removal: OK"
+            }
+            else {
+                Write-Output "[Office] Force removal: FAILED - GetHelpCmd exit code $($proc.ExitCode)"
             }
         }
         else {
-            Write-Output "[Office] Force removal: FAILED - SaRA download did not produce SaRAcmd.exe"
+            Write-Output "[Office] Force removal: FAILED - download did not produce GetHelpCmd.exe"
         }
     }
     catch { Write-Output "[Office] Force removal: FAILED - $($_.Exception.Message)" }
     finally {
-        if (Test-Path $SaRA_ZIP) { Remove-Item $SaRA_ZIP -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $SaRA_DIR) { Remove-Item $SaRA_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $GetHelp_ZIP) { Remove-Item $GetHelp_ZIP -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -1276,6 +1289,13 @@ function Install-NecessaryApps {
 # MENU ACTIONS
 # =========================================================================
 function Show-SystemInfo {
+    param(
+        # '' = no known context (standalone menu access): detect whichever
+        # suite is actually on disk, so a box carrying both gets both sets.
+        # 'Office' / 'Wps' = only create shortcuts for that suite, matching
+        # the licence answer from Read-OfficeChoice.
+        [ValidateSet('', 'Office', 'Wps')][string]$OfficeChoice = ''
+    )
     Write-Host "`n[System] Collecting hardware information..." -ForegroundColor Cyan
     try {
         $logFile = Get-HardwareInfo
@@ -1286,56 +1306,68 @@ function Show-SystemInfo {
         return
     }
 
-    # Neither suite puts icons on the desktop, so do it here. Detected from what
-    # is actually on the machine rather than from the earlier licence answer, so
-    # a box carrying both suites gets both sets.
+    # Neither suite puts icons on the desktop, so do it here. With a known
+    # licence answer, only that suite's shortcuts go out - a WPS box must not
+    # also get Word/Excel/PowerPoint icons, and vice versa. With no context
+    # (standalone menu access) fall back to detecting what is actually on the
+    # machine, so a box carrying both suites gets both sets.
     try {
-        $officeApps = @{ "WINWORD.EXE" = "Word"; "EXCEL.EXE" = "Excel"; "POWERPNT.EXE" = "PowerPoint" }
-        $officeRoots = @(
-            "C:\Program Files\Microsoft Office\root\Office16",
-            "C:\Program Files (x86)\Microsoft Office\root\Office16"
-        )
         $desktop = [Environment]::GetFolderPath('Desktop')
-        $wshShell = New-Object -ComObject WScript.Shell
-        $created = 0
-        foreach ($root in $officeRoots) {
-            foreach ($exe in $officeApps.Keys) {
-                $target = Join-Path $root $exe
-                $shortcutPath = Join-Path $desktop "$($officeApps[$exe]).lnk"
-                if ((Test-Path $target) -and -not (Test-Path $shortcutPath)) {
-                    $shortcut = $wshShell.CreateShortcut($shortcutPath)
-                    $shortcut.TargetPath = $target
-                    $shortcut.Save()
-                    $created++
-                }
-            }
-        }
-        if ($created -gt 0) { Write-Host "[OK] Created $created Office desktop shortcut(s)." -ForegroundColor Green }
+        $createOffice = ($OfficeChoice -ne 'Wps')
+        $createWps    = ($OfficeChoice -ne 'Office')
 
-        # WPS already ships finished shortcuts under Start Menu\Programs, so they
-        # are copied out instead of being rebuilt from an exe path. Both hives are
-        # checked: WPS installs per-user, but an all-users copy can exist too.
-        $startMenus = @(
-            (Join-Path $env:APPDATA     "Microsoft\Windows\Start Menu\Programs"),
-            (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs")
-        )
-        $copied = 0
-        foreach ($menu in $startMenus) {
-            if (-not (Test-Path $menu)) { continue }
-            # Match the folder name too: WPS files its shortcuts inside a "WPS
-            # Office" folder, and some builds name them plain "Writer.lnk".
-            $links = Get-ChildItem -Path $menu -Filter "*.lnk" -Recurse -ErrorAction SilentlyContinue |
-                     Where-Object { ($_.Name -match 'WPS' -or $_.Directory.Name -match 'WPS') -and
-                                    $_.Name -notmatch 'Uninstall|Repair|Feedback' }
-            foreach ($link in $links) {
-                $dest = Join-Path $desktop $link.Name
-                if (-not (Test-Path $dest)) {
-                    Copy-Item -LiteralPath $link.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
-                    if (Test-Path $dest) { $copied++ }
+        if ($createOffice) {
+            $officeApps = @{ "WINWORD.EXE" = "Word"; "EXCEL.EXE" = "Excel"; "POWERPNT.EXE" = "PowerPoint" }
+            $officeRoots = @(
+                "C:\Program Files\Microsoft Office\root\Office16",
+                "C:\Program Files (x86)\Microsoft Office\root\Office16"
+            )
+            $wshShell = New-Object -ComObject WScript.Shell
+            $created = 0
+            foreach ($root in $officeRoots) {
+                foreach ($exe in $officeApps.Keys) {
+                    $target = Join-Path $root $exe
+                    $shortcutPath = Join-Path $desktop "$($officeApps[$exe]).lnk"
+                    if ((Test-Path $target) -and -not (Test-Path $shortcutPath)) {
+                        $shortcut = $wshShell.CreateShortcut($shortcutPath)
+                        $shortcut.TargetPath = $target
+                        $shortcut.Save()
+                        $created++
+                    }
                 }
             }
+            if ($created -gt 0) { Write-Host "[OK] Created $created Office desktop shortcut(s)." -ForegroundColor Green }
         }
-        if ($copied -gt 0) { Write-Host "[OK] Copied $copied WPS desktop shortcut(s)." -ForegroundColor Green }
+
+        if ($createWps) {
+            # WPS already ships finished shortcuts under Start Menu\Programs, so they
+            # are copied out instead of being rebuilt from an exe path. Both hives are
+            # checked: WPS installs per-user, but an all-users copy can exist too.
+            # Only the three productivity apps (Writer/Spreadsheets/Presentation =
+            # Docs/Sheet/Slide) are copied - not the WPS launcher, PDF, Cloud, etc.
+            $startMenus = @(
+                (Join-Path $env:APPDATA     "Microsoft\Windows\Start Menu\Programs"),
+                (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs")
+            )
+            $wpsAppPattern = 'Writer|Spreadsheet|Presentation'
+            $copied = 0
+            foreach ($menu in $startMenus) {
+                if (-not (Test-Path $menu)) { continue }
+                # Match the folder name too: WPS files its shortcuts inside a "WPS
+                # Office" folder, and some builds name them plain "Writer.lnk".
+                $links = Get-ChildItem -Path $menu -Filter "*.lnk" -Recurse -ErrorAction SilentlyContinue |
+                         Where-Object { ($_.Name -match 'WPS' -or $_.Directory.Name -match 'WPS') -and
+                                        $_.Name -match $wpsAppPattern }
+                foreach ($link in $links) {
+                    $dest = Join-Path $desktop $link.Name
+                    if (-not (Test-Path $dest)) {
+                        Copy-Item -LiteralPath $link.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
+                        if (Test-Path $dest) { $copied++ }
+                    }
+                }
+            }
+            if ($copied -gt 0) { Write-Host "[OK] Copied $copied WPS desktop shortcut(s)." -ForegroundColor Green }
+        }
     }
     catch {
         Write-Host "[WARN] Could not create desktop shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -1391,7 +1423,7 @@ function Invoke-OptimizeInstall {
 
     # Runs last on purpose: the Office shortcuts need the suite that was just
     # installed to be on disk, and Notepad must not pop over the live table.
-    Show-SystemInfo
+    Show-SystemInfo -OfficeChoice $officeChoice
 }
 
 # =========================================================================
