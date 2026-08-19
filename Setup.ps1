@@ -1082,7 +1082,7 @@ function Install-NecessaryApps {
             $glyph = Get-StatusGlyph $state
             $color = Get-StatusColor $state
             $line = "  {0} {1}  {2}" -f $glyph, $a.Name.PadRight(14), $detail
-            Write-Host $line.PadRight(58) -ForegroundColor $color
+            Write-Host $line.PadRight($Script:UiWidth - 2) -ForegroundColor $color
         }
         # Overall progress line
         $total = $catalog.Count
@@ -1091,7 +1091,7 @@ function Install-NecessaryApps {
         $bar = Get-ProgressBar -Percent $pct -Width 22
         $failTxt = if ($fail -gt 0) { "$fail failed" } else { "0 failed" }
         $summary = "  {0} {1}/{2}  {3}  {4:mm\:ss}" -f $bar, ($done + $fail), $total, $failTxt, $elapsed
-        Write-Host $summary.PadRight(58) -ForegroundColor White
+        Write-Host $summary.PadRight($Script:UiWidth - 2) -ForegroundColor White
     }
 
     # Starts (or restarts) a direct download. A faulted WebClient cannot be
@@ -1642,8 +1642,9 @@ function Show-Menu {
     Write-BoxTop
     Write-BoxCenter "MINIAPP  -  Windows Setup Tool" "White"
     Write-BoxSep
-    # Two spaces between fields, not three: a 15-char hostname plus "Offline"
-    # overruns the 58-column interior at three and loses its last letter.
+    # Two spaces between fields, not three: kept tight from when the box was
+    # narrower (58-column interior) - a 15-char hostname plus "Offline" would
+    # have overrun it at three spaces and lost its last letter.
     Write-BoxLine ("  Host: {0}  Disk C: {1}GB free  Net: {2}" -f $Ctx.Host, $Ctx.CFree, $Ctx.Net) "DarkGray"
     # Update sits hard right and the OS caption is what gives way, not the other
     # way round: "Windows 10 Enterprise LTSC 2021" is long enough to shove the
