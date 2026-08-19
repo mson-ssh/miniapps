@@ -416,15 +416,18 @@ $RemoveOfficeScript = {
 
         if ($exe) {
             Write-Output "[Office] Found GetHelpCmd.exe at $($exe.FullName)"
-            $argList = "-S OfficeScrubScenario -AcceptEula -OfficeVersion All"
-            Write-Output "[Office] Running: GetHelpCmd.exe $argList"
+            # Array form, not one space-joined string: removes any ambiguity in
+            # how the tokens reach the child process's own argument parser.
+            $argArray = @('-S', 'OfficeScrubScenario', '-AcceptEula', '-OfficeVersion', 'All')
+            Write-Output "[Office] Running: GetHelpCmd.exe $($argArray -join ' ')"
 
             if (Test-Path $GetHelp_OUT) { Remove-Item $GetHelp_OUT -Force -ErrorAction SilentlyContinue }
             if (Test-Path $GetHelp_ERR) { Remove-Item $GetHelp_ERR -Force -ErrorAction SilentlyContinue }
-            $proc = Start-Process -FilePath $exe.FullName -ArgumentList $argList -Wait -PassThru -NoNewWindow `
+            $proc = Start-Process -FilePath $exe.FullName -ArgumentList $argArray -Wait -PassThru -NoNewWindow `
                                    -RedirectStandardOutput $GetHelp_OUT -RedirectStandardError $GetHelp_ERR
             Write-Output "[Office] GetHelpCmd exit code: $($proc.ExitCode)"
 
+            $stdoutText = Get-Content -Path $GetHelp_OUT -Raw -ErrorAction SilentlyContinue
             foreach ($line in (Get-Content -Path $GetHelp_OUT -ErrorAction SilentlyContinue)) {
                 if ($line) { Write-Output "[Office][stdout] $line" }
             }
@@ -432,11 +435,18 @@ $RemoveOfficeScript = {
                 if ($line) { Write-Output "[Office][stderr] $line" }
             }
 
+            # Exit code alone isn't trustworthy: GetHelpCmd has been seen to
+            # return 0 even when it rejected the arguments and printed its
+            # usage/help text instead of actually running the scenario.
+            $rejectedArgs = $stdoutText -and ($stdoutText -match 'Invalid command line arguments' -or $stdoutText -match '(?m)^Usage:')
+            if ($rejectedArgs) {
+                Write-Output "[Office] Force removal: FAILED - GetHelpCmd rejected the command line (see stdout above)"
+            }
             # 0 = success. 6 = an Office process was still running (shouldn't
             # happen, they were stopped above). Anything else = failure; the
             # raw code is logged since Microsoft's failure codes for this
             # scenario aren't all publicly enumerated.
-            if ($proc.ExitCode -eq 0) {
+            elseif ($proc.ExitCode -eq 0) {
                 Write-Output "[Office] Force removal: OK"
             }
             else {
@@ -453,8 +463,8 @@ $RemoveOfficeScript = {
     finally {
         if (Test-Path $GetHelp_ZIP) { Remove-Item $GetHelp_ZIP -Force -ErrorAction SilentlyContinue }
         if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $GetHelp_OUT) { Remove-Item $GetHelp_OUT -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $GetHelp_ERR) { Remove-Item $GetHelp_ERR -Force -ErrorAction SilentlyContinue }
+        # $GetHelp_OUT / $GetHelp_ERR are deliberately kept (not deleted) so
+        # Invoke-RemoveOffice can open the raw, unmangled text afterwards.
     }
 }
 
@@ -1438,6 +1448,14 @@ function Invoke-RemoveOffice {
         Write-Host "   $_" -ForegroundColor $color
     }
     Write-Host "`n[OK] Office removal finished." -ForegroundColor Green
+
+    # Open the raw, unmangled GetHelpCmd output in Notepad so it can be
+    # copy-pasted exactly as-is (a terminal screenshot loses/garbles text).
+    $rawLog = "$env:TEMP\GetHelpCmd_stdout.log"
+    if ((Test-Path $rawLog) -and (Get-Item $rawLog).Length -gt 0) {
+        Write-Host "[Office] Raw GetHelpCmd output: $rawLog (opening in Notepad)" -ForegroundColor Cyan
+        Start-Process -FilePath "notepad.exe" -ArgumentList "`"$rawLog`"" -WindowStyle Normal
+    }
 }
 
 function Invoke-OptimizeInstall {
