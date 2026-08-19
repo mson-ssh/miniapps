@@ -1385,6 +1385,18 @@ function Invoke-Debloatware {
     }
 }
 
+function Invoke-RemoveOffice {
+    # Runs the exact same logic as the background job that fires when WPS is
+    # chosen (see $RemoveOfficeScript) - invoked directly here, in the
+    # foreground, so it can be tested/run on its own with live output.
+    Write-Host "`n[System] Force-removing Office (2016-2024 + Microsoft 365)..." -ForegroundColor Magenta
+    & $RemoveOfficeScript | ForEach-Object {
+        $color = if ($_ -match 'FAILED') { 'Red' } else { 'Green' }
+        Write-Host "   $_" -ForegroundColor $color
+    }
+    Write-Host "`n[OK] Office removal finished." -ForegroundColor Green
+}
+
 function Invoke-OptimizeInstall {
     # Menu 1 + 4 + 3 off a single keypress. The Office question is asked here
     # instead of inside the engine so everything starts only after it is
@@ -1435,6 +1447,7 @@ $MenuOptions = @(
     @{ Label = "System Information";        Desc = "Export hardware report to Desktop" },
     @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
     @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
+    @{ Label = "Remove Office";             Desc = "Force-remove Office 2016-2024 + Microsoft 365 (no reinstall)" },
     @{ Label = "Exit";                      Desc = "Close the tool" }
 )
 
@@ -1524,6 +1537,8 @@ function Read-MenuChoice {
             'NumPad5'   { return 4 }
             'D6'        { return 5 }
             'NumPad6'   { return 5 }
+            'D7'        { return 6 }
+            'NumPad7'   { return 6 }
             # A highlights Optimize Install; Enter then runs it
             'A'         { $selectedIndex = 4 }
         }
@@ -1542,7 +1557,8 @@ while ($true) {
         2 { Show-SystemInfo }
         3 { Invoke-Debloatware }
         4 { Invoke-OptimizeInstall }
-        5 {
+        5 { Invoke-RemoveOffice }
+        6 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
         }
