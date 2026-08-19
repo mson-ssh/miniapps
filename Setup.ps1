@@ -419,10 +419,13 @@ $RemoveOfficeScript = {
         Write-Output "[Office] No running Office processes found."
     }
 
-    # Always the "runtime" build (bundles its own .NET Desktop Runtime) so
-    # this doesn't depend on .NET being pre-installed on the target machine.
-    $Arch    = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
-    $OTP_URL = "https://www.officetool.plus/redirect/download.php?type=runtime&arch=$Arch"
+    # "Runtime" build (bundles its own .NET Desktop Runtime) so this doesn't
+    # depend on .NET being pre-installed on the target machine. Pre-repacked
+    # as .zip (Expand-Archive can't extract .7z, the upstream release format)
+    # and mirrored on our own R2 bucket - falls back to the GitHub release
+    # (also .zip) if that mirror is ever unavailable.
+    $OTP_R2_URL     = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/OTP.zip"
+    $OTP_GITHUB_URL = "https://github.com/YerongAI/Office-Tool/releases/download/v11.6.6.0/Office_Tool_with_runtime_v11.6.6.0_x64.zip"
     $OTP_ZIP = "$env:TEMP\OfficeToolPlus.zip"
     $OTP_DIR = "$env:TEMP\OfficeToolPlus"
     $OTP_OUT = "$env:TEMP\OfficeToolPlus_stdout.log"
@@ -433,8 +436,22 @@ $RemoveOfficeScript = {
         if (Test-Path $OTP_DIR) { Remove-Item $OTP_DIR -Recurse -Force -ErrorAction SilentlyContinue }
         New-Item -Path $OTP_DIR -ItemType Directory -Force | Out-Null
 
-        Write-Output "[Office] Downloading Office Tool Plus from $OTP_URL ..."
-        Start-BitsTransfer -Source $OTP_URL -Destination $OTP_ZIP -ErrorAction Stop
+        $downloaded = $false
+        foreach ($url in @($OTP_R2_URL, $OTP_GITHUB_URL)) {
+            try {
+                Write-Output "[Office] Downloading Office Tool Plus from $url ..."
+                Start-BitsTransfer -Source $url -Destination $OTP_ZIP -ErrorAction Stop
+                $downloaded = $true
+                break
+            }
+            catch {
+                Write-Output "[Office] Download failed from $url - $($_.Exception.Message)"
+            }
+        }
+        if (-not $downloaded) {
+            Write-Output "[Office] Force removal: FAILED - could not download Office Tool Plus from any source"
+            return
+        }
         $zipSizeMB = [math]::Round((Get-Item $OTP_ZIP).Length / 1MB, 2)
         Write-Output "[Office] Downloaded $zipSizeMB MB -> $OTP_ZIP"
 
