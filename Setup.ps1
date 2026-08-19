@@ -500,29 +500,6 @@ $RemoveOfficeScript = {
     }
 }
 
-function Start-OfficeRemovalWindow {
-    # Launches $RemoveOfficeScript in its own visible PowerShell window
-    # instead of a hidden Start-Job: the scrub can take several minutes, and
-    # the technician should be able to see it's actively working rather than
-    # wondering whether the machine is stuck. Returns the process object so
-    # the caller can wait on it like the other background jobs.
-    # Wrapped in its own & { } block: $RemoveOfficeScript uses a bare
-    # "return" when there's no Office to remove, which would otherwise end
-    # this whole spliced-together top-level script early and skip the
-    # "press any key" pause below, closing the window before it can be read.
-    $wrapped = @"
-`$Host.UI.RawUI.WindowTitle = 'MiniApp - Remove Office'
-& {
-$($RemoveOfficeScript.ToString())
-}
-Write-Host ''
-Write-Host 'Done. Press any key to close this window...' -ForegroundColor Cyan
-[System.Console]::ReadKey(`$true) | Out-Null
-"@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
-    return Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -PassThru
-}
-
 # =========================================================================
 # EMBEDDED: DEBLOATWARE
 # Job form of Invoke-Debloatware, used by Optimize Install so the debloat pass
@@ -953,17 +930,17 @@ function Install-NecessaryApps {
     $configJob = Start-Job -ScriptBlock $ConfigScript
     $diskJob = Start-Job -ScriptBlock $DiskScript
     $backgroundJobs = @($configJob, $diskJob)
-    Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
 
     # No Office licence: WPS took the Office slot above, and the machine's
     # existing Office install (if any) gets force-removed too, so the
-    # customer never ends up with both WPS and a stale Office. Runs in its
-    # own visible window (scans for Office first, skips the rest if there's
-    # none) instead of a hidden job, since the scrub can take a few minutes.
-    $officeRemovalProcess = $null
+    # customer never ends up with both WPS and a stale Office.
     if ($OfficeChoice -eq 'Wps') {
-        $officeRemovalProcess = Start-OfficeRemovalWindow
-        Write-Host "-> Office removal launched in a separate window (PID $($officeRemovalProcess.Id))." -ForegroundColor Gray
+        $removeOfficeJob = Start-Job -ScriptBlock $RemoveOfficeScript
+        $backgroundJobs += $removeOfficeJob
+        Write-Host "-> Background jobs activated (Config, Disk, Office Removal)." -ForegroundColor Gray
+    }
+    else {
+        Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
     }
 
     # Installer mode must not touch Winget: bootstrapping it would download
@@ -1286,20 +1263,6 @@ function Install-NecessaryApps {
             Write-Host ("   [!] Job '{0}' still running after {1} min - stopping it." -f
                 $job.Name, [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
             Stop-Job -Job $job -ErrorAction SilentlyContinue
-        }
-    }
-
-    if ($officeRemovalProcess) {
-        Write-Host "[System] Waiting for the Office removal window to finish..." -ForegroundColor Cyan
-        $finished = $officeRemovalProcess.WaitForExit($Script:JobTimeoutSec * 1000)
-        if (-not $finished) {
-            # Not force-closed: killing it mid-scrub could leave Office in a
-            # worse, half-removed state than just leaving the window open.
-            Write-Host ("   [!] Office removal window still running after {0} min - left open, check it manually." -f
-                [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
-        }
-        else {
-            Write-Host "   [OK] Office removal window finished." -ForegroundColor Green
         }
     }
 
