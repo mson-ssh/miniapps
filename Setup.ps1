@@ -358,17 +358,18 @@ $DiskScript = {
 
 # =========================================================================
 # EMBEDDED: OFFICE FORCE REMOVAL (was config/Remove-Office.ps1)
-# Runs as a background job only when the machine has no Office licence and
-# WPS Office is taking the Office slot. Uses Microsoft's own command-line
-# Get Help tool, OfficeScrubScenario - the same engine Microsoft support
-# uses to clean up a broken/leftover Office install - so no third-party
-# binary needs to ship inside this single-file script.
-# NOTE: this tool used to be called SaRA (Support and Recovery Assistant)
-# and shipped as SaRAcmd.exe from aka.ms/SaRA_CommandLineVersionFiles.
-# Microsoft retired that build; it is now GetHelpCmd.exe from
-# aka.ms/SaRA_EnterpriseVersionFiles, and -CloseOffice is not a valid
-# switch for OfficeScrubScenario (Office processes are stopped below
-# instead - GetHelp just aborts with code 6 if any are still running).
+# Runs only when the machine has no Office licence and WPS Office is taking
+# the Office slot. Uses Office Tool Plus's own "toolbox /rmoffice" console
+# command (direct registry/component cleanup) to force-remove Office.
+# NOTE: this used to run Microsoft's own GetHelpCmd.exe (OfficeScrubScenario)
+# instead - the official, Microsoft-supported removal path. Switched to
+# Office Tool Plus after GetHelpCmd repeatedly failed in real testing
+# (rejected arguments on one build, then errored outright on a machine
+# with a freshly installed Office 2024), while "toolbox /rmoffice" worked.
+# Trade-off: this now depends on a third-party binary (not Microsoft's own),
+# downloaded from officetool.plus rather than an aka.ms link, and it does
+# its own direct component/registry cleanup rather than going through the
+# officially supported removal flow.
 # =========================================================================
 $RemoveOfficeScript = {
     $ProgressPreference = 'SilentlyContinue'
@@ -402,13 +403,7 @@ $RemoveOfficeScript = {
     }
     Write-Output "[Office] Scan: an Office installation was found - proceeding with removal."
 
-    $GetHelp_URL  = "https://aka.ms/SaRA_EnterpriseVersionFiles"
-    $GetHelp_ZIP  = "$env:TEMP\GetHelpCmd.zip"
-    $GetHelp_DIR  = "$env:TEMP\GetHelpCmd"
-    $GetHelp_OUT  = "$env:TEMP\GetHelpCmd_stdout.log"
-    $GetHelp_ERR  = "$env:TEMP\GetHelpCmd_stderr.log"
     $OfficeProcesses = "lync", "winword", "excel", "msaccess", "mstore", "infopath", "setlang", "msouc", "ois", "onenote", "outlook", "powerpnt", "mspub", "groove", "visio", "winproj", "graph", "teams"
-
     $stopped = @()
     foreach ($name in $OfficeProcesses) {
         $running = Get-Process -Name $name -ErrorAction SilentlyContinue
@@ -424,82 +419,66 @@ $RemoveOfficeScript = {
         Write-Output "[Office] No running Office processes found."
     }
 
+    # Always the "runtime" build (bundles its own .NET Desktop Runtime) so
+    # this doesn't depend on .NET being pre-installed on the target machine.
+    $Arch    = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    $OTP_URL = "https://www.officetool.plus/redirect/download.php?type=runtime&arch=$Arch"
+    $OTP_ZIP = "$env:TEMP\OfficeToolPlus.zip"
+    $OTP_DIR = "$env:TEMP\OfficeToolPlus"
+    $OTP_OUT = "$env:TEMP\OfficeToolPlus_stdout.log"
+    $OTP_ERR = "$env:TEMP\OfficeToolPlus_stderr.log"
+
     try {
-        if (Test-Path $GetHelp_ZIP) { Remove-Item $GetHelp_ZIP -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
-        New-Item -Path $GetHelp_DIR -ItemType Directory -Force | Out-Null
+        if (Test-Path $OTP_ZIP) { Remove-Item $OTP_ZIP -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $OTP_DIR) { Remove-Item $OTP_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -Path $OTP_DIR -ItemType Directory -Force | Out-Null
 
-        Write-Output "[Office] Downloading GetHelpCmd from $GetHelp_URL ..."
-        Start-BitsTransfer -Source $GetHelp_URL -Destination $GetHelp_ZIP -ErrorAction Stop
-        $zipSizeMB = [math]::Round((Get-Item $GetHelp_ZIP).Length / 1MB, 2)
-        Write-Output "[Office] Downloaded $zipSizeMB MB -> $GetHelp_ZIP"
+        Write-Output "[Office] Downloading Office Tool Plus from $OTP_URL ..."
+        Start-BitsTransfer -Source $OTP_URL -Destination $OTP_ZIP -ErrorAction Stop
+        $zipSizeMB = [math]::Round((Get-Item $OTP_ZIP).Length / 1MB, 2)
+        Write-Output "[Office] Downloaded $zipSizeMB MB -> $OTP_ZIP"
 
-        Write-Output "[Office] Extracting archive to $GetHelp_DIR ..."
-        Expand-Archive -Path $GetHelp_ZIP -DestinationPath $GetHelp_DIR -Force
+        Write-Output "[Office] Extracting archive to $OTP_DIR ..."
+        Expand-Archive -Path $OTP_ZIP -DestinationPath $OTP_DIR -Force
 
-        # Search instead of assuming a fixed subfolder: Microsoft has changed
-        # the zip layout before (used to nest everything under a DONE\ folder).
-        $allFiles = Get-ChildItem -Path $GetHelp_DIR -Recurse -File -ErrorAction SilentlyContinue
-        Write-Output "[Office] Archive extracted: $($allFiles.Count) file(s) found."
-        $exe = $allFiles | Where-Object { $_.Name -eq 'GetHelpCmd.exe' } | Select-Object -First 1
+        $exe = Get-ChildItem -Path $OTP_DIR -Filter "Office Tool Plus.Console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 
         if ($exe) {
-            Write-Output "[Office] Found GetHelpCmd.exe at $($exe.FullName)"
-            # -OfficeVersion is documented on learn.microsoft.com but this
-            # build's own -Help output does not list it and rejects it as an
-            # invalid argument - so it is left out and GetHelpCmd auto-detects
-            # whatever Office version(s) are actually installed instead.
-            $argArray = @('-S', 'OfficeScrubScenario', '-AcceptEula')
-            Write-Output "[Office] Running: GetHelpCmd.exe $($argArray -join ' ')"
+            Write-Output "[Office] Found Office Tool Plus.Console.exe at $($exe.FullName)"
+            Write-Output "[Office] Running: toolbox /rmoffice"
 
-            if (Test-Path $GetHelp_OUT) { Remove-Item $GetHelp_OUT -Force -ErrorAction SilentlyContinue }
-            if (Test-Path $GetHelp_ERR) { Remove-Item $GetHelp_ERR -Force -ErrorAction SilentlyContinue }
-            $proc = Start-Process -FilePath $exe.FullName -ArgumentList $argArray -Wait -PassThru -NoNewWindow `
-                                   -RedirectStandardOutput $GetHelp_OUT -RedirectStandardError $GetHelp_ERR
-            Write-Output "[Office] GetHelpCmd exit code: $($proc.ExitCode)"
+            if (Test-Path $OTP_OUT) { Remove-Item $OTP_OUT -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $OTP_ERR) { Remove-Item $OTP_ERR -Force -ErrorAction SilentlyContinue }
+            $proc = Start-Process -FilePath $exe.FullName -ArgumentList @('toolbox', '/rmoffice') -Wait -PassThru -NoNewWindow `
+                                   -RedirectStandardOutput $OTP_OUT -RedirectStandardError $OTP_ERR
+            Write-Output "[Office] Office Tool Plus exit code: $($proc.ExitCode)"
 
-            $stdoutText = Get-Content -Path $GetHelp_OUT -Raw -ErrorAction SilentlyContinue
-            foreach ($line in (Get-Content -Path $GetHelp_OUT -ErrorAction SilentlyContinue)) {
+            foreach ($line in (Get-Content -Path $OTP_OUT -ErrorAction SilentlyContinue)) {
                 if ($line) { Write-Output "[Office][stdout] $line" }
             }
-            foreach ($line in (Get-Content -Path $GetHelp_ERR -ErrorAction SilentlyContinue)) {
+            foreach ($line in (Get-Content -Path $OTP_ERR -ErrorAction SilentlyContinue)) {
                 if ($line) { Write-Output "[Office][stderr] $line" }
             }
 
-            # Exit code alone isn't trustworthy: GetHelpCmd has been seen to
-            # return 0 even when it rejected the arguments and printed its
-            # usage/help text instead of actually running the scenario.
-            $rejectedArgs = $stdoutText -and ($stdoutText -match 'Invalid command line arguments' -or $stdoutText -match '(?m)^Usage:')
-            if ($rejectedArgs) {
-                Write-Output "[Office] Force removal: FAILED - GetHelpCmd rejected the command line (see stdout above)"
+            # Office Tool Plus doesn't publicly document its exit codes for
+            # toolbox commands, so 0 is treated as success and anything else
+            # as failure - check the stdout/stderr lines above for the reason.
+            if ($proc.ExitCode -eq 0) {
+                Write-Output "[Office] Force removal: OK"
             }
             else {
-                # Documented OfficeScrubScenario result codes (no -OfficeVersion):
-                # 0 = removed successfully. 68 = no Office found (nothing to do,
-                # not a failure). 8 = multiple versions found, needs the full GUI.
-                # 9 = failed to remove, needs the full GUI. 6 = an Office process
-                # was still running (shouldn't happen, they were stopped above).
-                # 10 = not elevated (shouldn't happen, this script requires admin).
-                switch ($proc.ExitCode) {
-                    0  { Write-Output "[Office] Force removal: OK" }
-                    68 { Write-Output "[Office] Force removal: OK (no Office installation found)" }
-                    8  { Write-Output "[Office] Force removal: FAILED - multiple Office versions detected, GetHelpCmd needs the full GUI tool for this machine" }
-                    9  { Write-Output "[Office] Force removal: FAILED - GetHelpCmd could not remove Office, needs the full GUI tool" }
-                    default { Write-Output "[Office] Force removal: FAILED - GetHelpCmd exit code $($proc.ExitCode)" }
-                }
+                Write-Output "[Office] Force removal: FAILED - Office Tool Plus exit code $($proc.ExitCode)"
             }
         }
         else {
-            Write-Output "[Office] Force removal: FAILED - download did not produce GetHelpCmd.exe"
-            Write-Output "[Office] Files found in archive instead:"
-            foreach ($f in $allFiles) { Write-Output "[Office]   $($f.FullName)" }
+            Write-Output "[Office] Force removal: FAILED - download did not produce Office Tool Plus.Console.exe"
         }
     }
     catch { Write-Output "[Office] Force removal: FAILED - $($_.Exception.Message)" }
     finally {
-        if (Test-Path $GetHelp_ZIP) { Remove-Item $GetHelp_ZIP -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $GetHelp_DIR) { Remove-Item $GetHelp_DIR -Recurse -Force -ErrorAction SilentlyContinue }
-        # $GetHelp_OUT / $GetHelp_ERR are deliberately kept (not deleted) so
+        if (Test-Path $OTP_ZIP) { Remove-Item $OTP_ZIP -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $OTP_DIR) { Remove-Item $OTP_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+        # $OTP_OUT / $OTP_ERR are deliberately kept (not deleted) so
         # Invoke-RemoveOffice can open the raw, unmangled text afterwards.
     }
 }
@@ -1522,11 +1501,11 @@ function Invoke-RemoveOffice {
     }
     Write-Host "`n[OK] Office removal finished." -ForegroundColor Green
 
-    # Open the raw, unmangled GetHelpCmd output in Notepad so it can be
+    # Open the raw, unmangled Office Tool Plus output in Notepad so it can be
     # copy-pasted exactly as-is (a terminal screenshot loses/garbles text).
-    $rawLog = "$env:TEMP\GetHelpCmd_stdout.log"
+    $rawLog = "$env:TEMP\OfficeToolPlus_stdout.log"
     if ((Test-Path $rawLog) -and (Get-Item $rawLog).Length -gt 0) {
-        Write-Host "[Office] Raw GetHelpCmd output: $rawLog (opening in Notepad)" -ForegroundColor Cyan
+        Write-Host "[Office] Raw Office Tool Plus output: $rawLog (opening in Notepad)" -ForegroundColor Cyan
         Start-Process -FilePath "notepad.exe" -ArgumentList "`"$rawLog`"" -WindowStyle Normal
     }
 }
