@@ -28,6 +28,55 @@ try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $Script:CanReposition = $false
 try { $Script:CanReposition = -not [Console]::IsOutputRedirected } catch { }
 
+# Bump the console font size. Registry font settings only apply to new
+# console windows, so the running one is resized directly via the Win32
+# console font API. Best effort: only classic conhost supports this -
+# Windows Terminal manages its own font and ignores/rejects the call.
+if ($Script:CanReposition) {
+    try {
+        $fontCode = @'
+    using System;
+    using System.Runtime.InteropServices;
+    public class Win32Font {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct COORD { public short X; public short Y; }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct CONSOLE_FONT_INFO_EX {
+            public uint cbSize;
+            public uint nFont;
+            public COORD dwFontSize;
+            public int FontFamily;
+            public int FontWeight;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+            public string FaceName;
+        }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetStdHandle(int nStdHandle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool GetCurrentConsoleFontEx(IntPtr hOut, bool bMax, ref CONSOLE_FONT_INFO_EX info);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool SetCurrentConsoleFontEx(IntPtr hOut, bool bMax, ref CONSOLE_FONT_INFO_EX info);
+    }
+'@
+        Add-Type -TypeDefinition $fontCode -ErrorAction SilentlyContinue
+        $stdOut = [Win32Font]::GetStdHandle(-11)
+        $fontInfo = New-Object Win32Font+CONSOLE_FONT_INFO_EX
+        $fontInfo.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($fontInfo)
+        if ([Win32Font]::GetCurrentConsoleFontEx($stdOut, $false, [ref]$fontInfo)) {
+            # Built as a standalone variable, not "$fontInfo.dwFontSize.X = 0":
+            # COORD is a value type, so mutating a field through a chained
+            # property access edits a discarded copy and never sticks.
+            $coord = New-Object Win32Font+COORD
+            # Width 0 lets the TrueType font (Consolas by default) scale its
+            # own width to match the requested height instead of distorting it.
+            $coord.X = 0
+            $coord.Y = 20
+            $fontInfo.dwFontSize = $coord
+            [Win32Font]::SetCurrentConsoleFontEx($stdOut, $false, [ref]$fontInfo) | Out-Null
+        }
+    } catch { }
+}
+
 # Enlarge the console window/buffer so the boxed UI has more room. Best
 # effort: some hosts (Windows Terminal in particular) reject buffer/window
 # resize requests outright, so this must never break the rest of the script.
