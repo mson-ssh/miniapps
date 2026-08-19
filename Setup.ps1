@@ -373,6 +373,35 @@ $DiskScript = {
 $RemoveOfficeScript = {
     $ProgressPreference = 'SilentlyContinue'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    # Scan first: skip the download/run entirely when there is no Office to
+    # remove (common - a WPS machine often never had Office installed at
+    # all). Click-to-Run (2016+ retail/volume, Microsoft 365) registers its
+    # product list under its own Configuration key; anything else (older
+    # MSI-based Office) shows up in the standard "Programs and Features"
+    # Uninstall registry - the same mechanism Windows itself and Intune
+    # detection rules use to check whether an application is installed.
+    Write-Output "[Office] Scanning for an existing Office installation..."
+    $officeFound = $false
+    $c2rConfig = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -ErrorAction SilentlyContinue
+    if ($c2rConfig -and $c2rConfig.ProductReleaseIds) { $officeFound = $true }
+    if (-not $officeFound) {
+        $uninstallRoots = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        foreach ($root in $uninstallRoots) {
+            $match = Get-ItemProperty -Path $root -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Publisher -eq 'Microsoft Corporation' -and $_.DisplayName -match 'Office|365 Apps' }
+            if ($match) { $officeFound = $true; break }
+        }
+    }
+    if (-not $officeFound) {
+        Write-Output "[Office] Scan: no Office installation found - nothing to remove."
+        return
+    }
+    Write-Output "[Office] Scan: an Office installation was found - proceeding with removal."
+
     $GetHelp_URL  = "https://aka.ms/SaRA_EnterpriseVersionFiles"
     $GetHelp_ZIP  = "$env:TEMP\GetHelpCmd.zip"
     $GetHelp_DIR  = "$env:TEMP\GetHelpCmd"
@@ -473,6 +502,29 @@ $RemoveOfficeScript = {
         # $GetHelp_OUT / $GetHelp_ERR are deliberately kept (not deleted) so
         # Invoke-RemoveOffice can open the raw, unmangled text afterwards.
     }
+}
+
+function Start-OfficeRemovalWindow {
+    # Launches $RemoveOfficeScript in its own visible PowerShell window
+    # instead of a hidden Start-Job: the scrub can take several minutes, and
+    # the technician should be able to see it's actively working rather than
+    # wondering whether the machine is stuck. Returns the process object so
+    # the caller can wait on it like the other background jobs.
+    # Wrapped in its own & { } block: $RemoveOfficeScript uses a bare
+    # "return" when there's no Office to remove, which would otherwise end
+    # this whole spliced-together top-level script early and skip the
+    # "press any key" pause below, closing the window before it can be read.
+    $wrapped = @"
+`$Host.UI.RawUI.WindowTitle = 'MiniApp - Remove Office'
+& {
+$($RemoveOfficeScript.ToString())
+}
+Write-Host ''
+Write-Host 'Done. Press any key to close this window...' -ForegroundColor Cyan
+[System.Console]::ReadKey(`$true) | Out-Null
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
+    return Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -PassThru
 }
 
 # =========================================================================
@@ -905,17 +957,17 @@ function Install-NecessaryApps {
     $configJob = Start-Job -ScriptBlock $ConfigScript
     $diskJob = Start-Job -ScriptBlock $DiskScript
     $backgroundJobs = @($configJob, $diskJob)
+    Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
 
     # No Office licence: WPS took the Office slot above, and the machine's
-    # existing Office install (if any) gets force-removed in the background
-    # too, so the customer never ends up with both WPS and a stale Office.
+    # existing Office install (if any) gets force-removed too, so the
+    # customer never ends up with both WPS and a stale Office. Runs in its
+    # own visible window (scans for Office first, skips the rest if there's
+    # none) instead of a hidden job, since the scrub can take a few minutes.
+    $officeRemovalProcess = $null
     if ($OfficeChoice -eq 'Wps') {
-        $removeOfficeJob = Start-Job -ScriptBlock $RemoveOfficeScript
-        $backgroundJobs += $removeOfficeJob
-        Write-Host "-> Background jobs activated (Config, Disk, Office Removal)." -ForegroundColor Gray
-    }
-    else {
-        Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
+        $officeRemovalProcess = Start-OfficeRemovalWindow
+        Write-Host "-> Office removal launched in a separate window (PID $($officeRemovalProcess.Id))." -ForegroundColor Gray
     }
 
     # Installer mode must not touch Winget: bootstrapping it would download
@@ -1238,6 +1290,20 @@ function Install-NecessaryApps {
             Write-Host ("   [!] Job '{0}' still running after {1} min - stopping it." -f
                 $job.Name, [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
             Stop-Job -Job $job -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($officeRemovalProcess) {
+        Write-Host "[System] Waiting for the Office removal window to finish..." -ForegroundColor Cyan
+        $finished = $officeRemovalProcess.WaitForExit($Script:JobTimeoutSec * 1000)
+        if (-not $finished) {
+            # Not force-closed: killing it mid-scrub could leave Office in a
+            # worse, half-removed state than just leaving the window open.
+            Write-Host ("   [!] Office removal window still running after {0} min - left open, check it manually." -f
+                [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
+        }
+        else {
+            Write-Host "   [OK] Office removal window finished." -ForegroundColor Green
         }
     }
 
