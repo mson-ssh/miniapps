@@ -1635,15 +1635,41 @@ function Invoke-InfoTesting {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
-    $computer = Get-CimInstance Win32_ComputerSystem
-    $bios     = Get-CimInstance Win32_BIOS
-    $cpu      = Get-CimInstance Win32_Processor | Select-Object -First 1
-    $ram      = Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum
-    $disks    = Get-CimInstance Win32_DiskDrive | Where-Object { $_.MediaType -eq 'Fixed hard disk media' }
-    $gpus     = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notlike '*Basic*' -and $_.Name -notlike '*Standard*' }
+    $computer   = Get-CimInstance Win32_ComputerSystem
+    $bios       = Get-CimInstance Win32_BIOS
+    $cpu        = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $ramModules = @(Get-CimInstance Win32_PhysicalMemory | Where-Object { $_.Capacity })
+    $disks      = Get-CimInstance Win32_DiskDrive | Where-Object { $_.MediaType -eq 'Fixed hard disk media' }
+    $gpus       = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notlike '*Basic*' -and $_.Name -notlike '*Standard*' }
 
-    $ramGB = [math]::Round($ram.Sum / 1GB, 2)
     $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+    # RAM: total + type + speed on one line, then one "Slot N: manufacturer,
+    # capacity, bus speed" line per physical stick. Soldered/onboard RAM
+    # often isn't enumerated per-stick by WMI - $ramModules is just empty
+    # then, so the loop below naturally adds no slot lines.
+    $ramTotalGB = [math]::Round($computer.TotalPhysicalMemory / 1GB, 2)
+    $memTypeMap = @{
+        20 = "DDR"; 21 = "DDR2"; 22 = "DDR2 FB-DIMM"; 24 = "DDR3"
+        26 = "DDR4"; 27 = "LPDDR"; 28 = "LPDDR2"; 29 = "LPDDR3"; 30 = "LPDDR4"
+        34 = "DDR5"; 35 = "LPDDR5"
+    }
+    $firstModule = $ramModules | Select-Object -First 1
+    $ramType = if ($firstModule -and $memTypeMap.ContainsKey([int]$firstModule.SMBIOSMemoryType)) {
+        $memTypeMap[[int]$firstModule.SMBIOSMemoryType]
+    } else { "" }
+    $ramSpeed = if ($firstModule -and $firstModule.Speed) { "$($firstModule.Speed)MHz" } else { "" }
+
+    $ramLines = [System.Collections.Generic.List[string]]::new()
+    $ramLines.Add((("$ramTotalGB GB $ramType $ramSpeed").Trim() -replace '\s{2,}', ' '))
+    for ($i = 0; $i -lt $ramModules.Count; $i++) {
+        $mem = $ramModules[$i]
+        $capGB = [math]::Round($mem.Capacity / 1GB, 0)
+        $mfr = if ($mem.Manufacturer) { $mem.Manufacturer.Trim() } else { "Unknown" }
+        $speed = if ($mem.Speed) { "$($mem.Speed)MHz" } else { "N/A" }
+        $ramLines.Add("Slot $($i + 1): $mfr, ${capGB}GB, $speed")
+    }
+    $ramText = $ramLines -join "`r`n"
 
     try {
         $videoController = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution -and $_.CurrentVerticalResolution } | Select-Object -First 1
@@ -1668,7 +1694,7 @@ function Invoke-InfoTesting {
         @{ Label = "Model";         Value = "$($computer.Model)" }
         @{ Label = "Serial";        Value = "$($bios.SerialNumber)" }
         @{ Label = "CPU";           Value = "$($cpu.Name)" }
-        @{ Label = "RAM";           Value = "$ramGB GB" }
+        @{ Label = "RAM";           Value = $ramText }
         @{ Label = "Storage";       Value = $storageText }
         @{ Label = "Graphics Card"; Value = $gpuText }
         @{ Label = "Resolution";    Value = $screenRes }
