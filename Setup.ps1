@@ -13,6 +13,7 @@
 # only ~90KB, so a real transfer percentage would jump 0->100 in one frame
 # and not be worth showing.
 Write-Host "MiniApp is starting... [10%]" -ForegroundColor Cyan
+Write-Host "Powered by Minh Son AZ" -ForegroundColor DarkGray
 
 # Configure TLS 1.2 to prevent GitHub downloads from being blocked
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -116,7 +117,7 @@ $Script:Glyph = if ($Script:CanReposition) {
        H = "-"; V = "|"; TL = "+"; TR = "+"; BL = "+"; BR = "+" }
 }
 
-Write-Host "MiniApp is starting... [50%] Checking permissions..." -ForegroundColor Cyan
+Write-Host "MiniApp is starting... [50%]" -ForegroundColor Cyan
 
 # =========================================================================
 # AUTO-ELEVATE TO ADMINISTRATOR (UAC PROMPT)
@@ -129,14 +130,13 @@ if (-not $isAdmin) {
     }
     else {
         # Running from memory (irm | iex): no way to read own source, so re-fetch
-        Write-Host "MiniApp is starting... [70%] Requesting administrator rights..." -ForegroundColor Cyan
         $tempScript = "$env:TEMP\MiniApp\Setup_elevated.ps1"
         try {
             # -OutFile does not create parent dirs; MiniApp does not exist yet here
             $parent = Split-Path $tempScript -Parent
             if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
             Invoke-WebRequest -Uri $SelfUrl -OutFile $tempScript -UseBasicParsing -ErrorAction Stop
-            Write-Host "MiniApp is starting... [95%] Launching elevated session..." -ForegroundColor Cyan
+            Write-Host "MiniApp is starting... [100%] Launching..." -ForegroundColor Cyan
             Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
         }
         catch {
