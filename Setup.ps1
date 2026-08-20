@@ -1808,9 +1808,38 @@ function Invoke-InfoTesting {
     }
     catch { $screenRes = "N/A"; $refreshRate = "N/A" }
 
-    $storageText = ($disks | Where-Object { $_.Size } | ForEach-Object {
-        "$($_.Model) - $([math]::Round($_.Size / 1GB, 2)) GB"
-    }) -join "`r`n"
+    # Physical disk: model + nominal marketing capacity (1TB/512GB/250GB...),
+    # not the raw computed size - that's always a bit under the marketed
+    # number (binary GiB vs decimal GB: a "256GB" SSD reports ~238 GiB) -
+    # snapped to the nearest size from a lookup list of real SSD/HDD capacities.
+    function Get-NominalDiskSize {
+        param([double]$Bytes)
+        $decimalGB = $Bytes / 1000000000
+        $standardSizesGB = @(32, 60, 64, 90, 120, 125, 128, 160, 180, 200, 240, 250, 256, 320, 400, 480, 500, 512, 640, 750, 960, 1000, 1024, 1500, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 16000, 20000)
+        $closest = $standardSizesGB | Sort-Object { [Math]::Abs($_ - $decimalGB) } | Select-Object -First 1
+        if ($closest -ge 1000) { return "$([math]::Round($closest / 1000, 1))TB" }
+        return "${closest}GB"
+    }
+
+    $storageLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($disk in ($disks | Where-Object { $_.Size })) {
+        $storageLines.Add("$($disk.Model) - $(Get-NominalDiskSize -Bytes $disk.Size)")
+    }
+
+    # Partitions: each drive letter's own total capacity (not free space), so
+    # "Disk C: 200GB" is the whole C: volume, matching what the customer sees
+    # in File Explorer - not tied to the physical disk names above.
+    $partitionParts = @()
+    $volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' } | Sort-Object DriveLetter)
+    foreach ($vol in $volumes) {
+        $totalGB = [math]::Round($vol.Size / 1GB, 0)
+        $partitionParts += "Disk $($vol.DriveLetter): ${totalGB}GB"
+    }
+    if ($partitionParts.Count -gt 0) {
+        $storageLines.Add("Partitions: " + ($partitionParts -join ' + '))
+    }
+
+    $storageText = $storageLines -join "`r`n"
     if (-not $storageText) { $storageText = "N/A" }
 
     # Split into iGPU (Intel/AMD integrated) vs GPU (NVIDIA - always discrete -
