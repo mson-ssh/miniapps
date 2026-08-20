@@ -2134,7 +2134,13 @@ while ($true) {
         2 { Show-SystemInfo }
         3 { Invoke-Debloatware }
         4 { Invoke-OptimizeInstall }
-        5 { Invoke-InfoTesting }
+        5 {
+            # Closing the preview window is already the "I'm done" signal -
+            # skip the extra "press any key" pause and go straight back to
+            # the menu instead of requiring a second confirmation.
+            Invoke-InfoTesting
+            continue
+        }
         6 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
