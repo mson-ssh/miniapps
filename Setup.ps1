@@ -1648,7 +1648,10 @@ function Invoke-InfoTesting {
     # capacity, bus speed" line per physical stick. Soldered/onboard RAM
     # often isn't enumerated per-stick by WMI - $ramModules is just empty
     # then, so the loop below naturally adds no slot lines.
-    $ramTotalGB = [math]::Round($computer.TotalPhysicalMemory / 1GB, 2)
+    # Rounded to the nearest whole GB: TotalPhysicalMemory reports slightly
+    # under the nominal size (memory reserved for hardware), e.g. 15.75 for a
+    # 16GB stick - real RAM only ever comes in whole-GB sizes.
+    $ramTotalGB = [math]::Round($computer.TotalPhysicalMemory / 1GB, 0)
     $memTypeMap = @{
         20 = "DDR"; 21 = "DDR2"; 22 = "DDR2 FB-DIMM"; 24 = "DDR3"
         26 = "DDR4"; 27 = "LPDDR"; 28 = "LPDDR2"; 29 = "LPDDR3"; 30 = "LPDDR4"
