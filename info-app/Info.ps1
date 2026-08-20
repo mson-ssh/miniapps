@@ -262,8 +262,18 @@ $grid.Columns["Property"].Width = 180
 $grid.Columns["Property"].DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
 $grid.Columns["Value"].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
 
+# Highlight the specs a technician checks first: light blue background +
+# bold value, so CPU/RAM/Graphics Card stand out from the rest of the table.
+$highlightLabels = @("CPU", "RAM", "Graphics Card")
+$highlightBackColor = [System.Drawing.Color]::FromArgb(225, 239, 254)
+$highlightValueFont = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+
 foreach ($row in $rows) {
-    [void]$grid.Rows.Add($row.Label, $row.Value)
+    $rowIndex = $grid.Rows.Add($row.Label, $row.Value)
+    if ($highlightLabels -contains $row.Label) {
+        $grid.Rows[$rowIndex].DefaultCellStyle.BackColor = $highlightBackColor
+        $grid.Rows[$rowIndex].Cells[1].Style.Font = $highlightValueFont
+    }
 }
 
 $form.Controls.Add($grid)
