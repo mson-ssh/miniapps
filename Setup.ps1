@@ -1740,11 +1740,23 @@ function Invoke-InfoTesting {
     $smbiosModules = Get-RamModulesFromSmbios
 
     if ($smbiosModules) {
-        $ramTotalGB = [math]::Round((($smbiosModules | Measure-Object -Property CapacityBytes -Sum).Sum) / 1GB, 0)
-        $firstModule = $smbiosModules | Select-Object -First 1
-        $ramType = if ($firstModule -and $Script:MemTypeMap.ContainsKey($firstModule.TypeCode)) { $Script:MemTypeMap[$firstModule.TypeCode] } else { "" }
-        $ramSpeed = if ($firstModule -and $firstModule.Speed) { "$($firstModule.Speed)MHz" } else { "" }
-        $ramLines.Add((("$ramTotalGB GB $ramType $ramSpeed").Trim() -replace '\s{2,}', ' '))
+        # One summary line per kind present, not one combined line - a
+        # hybrid machine (some onboard + a SODIMM slot) has two different
+        # capacities and possibly two different speeds, so lumping them
+        # together would hide that. Onboard listed first when both present.
+        $onboardMods = @($smbiosModules | Where-Object { $_.Soldered })
+        $socketedMods = @($smbiosModules | Where-Object { -not $_.Soldered })
+        foreach ($grp in @(
+            @{ Label = "ONBOARD"; Mods = $onboardMods }
+            @{ Label = "SODIMM";  Mods = $socketedMods }
+        )) {
+            if ($grp.Mods.Count -eq 0) { continue }
+            $grpTotalGB = [math]::Round((($grp.Mods | Measure-Object -Property CapacityBytes -Sum).Sum) / 1GB, 0)
+            $grpFirst = $grp.Mods | Select-Object -First 1
+            $grpType = if ($Script:MemTypeMap.ContainsKey($grpFirst.TypeCode)) { $Script:MemTypeMap[$grpFirst.TypeCode] } else { "" }
+            $grpSpeed = if ($grpFirst.Speed) { "$($grpFirst.Speed)MHz" } else { "" }
+            $ramLines.Add((("$($grp.Label) ${grpTotalGB}GB $grpType $grpSpeed").Trim() -replace '\s{2,}', ' '))
+        }
 
         for ($i = 0; $i -lt $smbiosModules.Count; $i++) {
             $mod = $smbiosModules[$i]
@@ -1765,7 +1777,9 @@ function Invoke-InfoTesting {
         $firstModule = $ramModules | Select-Object -First 1
         $ramType = if ($firstModule -and $Script:MemTypeMap.ContainsKey([int]$firstModule.SMBIOSMemoryType)) { $Script:MemTypeMap[[int]$firstModule.SMBIOSMemoryType] } else { "" }
         $ramSpeed = if ($firstModule -and $firstModule.Speed) { "$($firstModule.Speed)MHz" } else { "" }
-        $ramLines.Add((("$ramTotalGB GB $ramType $ramSpeed").Trim() -replace '\s{2,}', ' '))
+        # No ONBOARD/SODIMM split here - Win32_PhysicalMemory's FormFactor
+        # can't be trusted for that, this path only runs when raw SMBIOS failed.
+        $ramLines.Add((("RAM ${ramTotalGB}GB $ramType $ramSpeed").Trim() -replace '\s{2,}', ' '))
 
         for ($i = 0; $i -lt $ramModules.Count; $i++) {
             $mem = $ramModules[$i]
