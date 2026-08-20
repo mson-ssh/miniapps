@@ -59,13 +59,13 @@ $rows = @(
 
 # ----------------------------- BUILD WINDOW --------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "MiniAZ System Information"
-$form.Size = New-Object System.Drawing.Size(560, 520)
+$form.Text = "System Information"
+$form.Size = New-Object System.Drawing.Size(600, 560)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
 $form.BackColor = [System.Drawing.Color]::White
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 12)
 
 $grid = New-Object System.Windows.Forms.DataGridView
 $grid.Dock = "Fill"
@@ -84,15 +84,15 @@ $grid.EnableHeadersVisualStyles = $false
 $grid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::AutoSize
 $grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::AllCells
 $grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
-$grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+$grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12)
 $grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(4)
 $grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
 
 [void]$grid.Columns.Add("Property", "Property")
 [void]$grid.Columns.Add("Value", "Value")
-$grid.Columns["Property"].Width = 160
-$grid.Columns["Property"].DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$grid.Columns["Property"].Width = 180
+$grid.Columns["Property"].DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
 $grid.Columns["Value"].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
 
 foreach ($row in $rows) {
