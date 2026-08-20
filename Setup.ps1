@@ -1726,6 +1726,12 @@ function Invoke-InfoTesting {
     # the repo - kept in sync by hand, that file has no dependency on this
     # one). Menu-only test bed: not wired into Install-NecessaryApps or
     # Show-SystemInfo, so it does not replace info.txt yet.
+
+    # Builds/places info.exe up front, before the preview window even shows -
+    # not gated behind closing that window, so it lands on the Desktop the
+    # moment this menu item runs.
+    Publish-InfoExe
+
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
@@ -1826,17 +1832,17 @@ function Invoke-InfoTesting {
         $storageLines.Add("$($disk.Model) - $(Get-NominalDiskSize -Bytes $disk.Size)")
     }
 
-    # Partitions: each drive letter's own total capacity (not free space), so
+    # Partition: each drive letter's own total capacity (not free space), so
     # "Disk C: 200GB" is the whole C: volume, matching what the customer sees
-    # in File Explorer - not tied to the physical disk names above.
-    $partitionParts = @()
+    # in File Explorer - not tied to the physical disk names above. One line
+    # per drive letter, not joined together, so it stays readable with 3+ disks.
     $volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' } | Sort-Object DriveLetter)
-    foreach ($vol in $volumes) {
-        $totalGB = [math]::Round($vol.Size / 1GB, 0)
-        $partitionParts += "Disk $($vol.DriveLetter): ${totalGB}GB"
-    }
-    if ($partitionParts.Count -gt 0) {
-        $storageLines.Add("Partitions: " + ($partitionParts -join ' + '))
+    if ($volumes.Count -gt 0) {
+        $storageLines.Add("Partition:")
+        foreach ($vol in $volumes) {
+            $totalGB = [math]::Round($vol.Size / 1GB, 0)
+            $storageLines.Add("Disk $($vol.DriveLetter): ${totalGB}GB")
+        }
     }
 
     $storageText = $storageLines -join "`r`n"
@@ -1932,8 +1938,6 @@ function Invoke-InfoTesting {
 
     $form.Controls.Add($grid)
     [void]$form.ShowDialog()
-
-    Publish-InfoExe
 }
 
 function New-InfoIcon {

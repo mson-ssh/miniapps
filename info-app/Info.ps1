@@ -200,17 +200,17 @@ foreach ($disk in ($disks | Where-Object { $_.Size })) {
     $storageLines.Add("$($disk.Model) - $(Get-NominalDiskSize -Bytes $disk.Size)")
 }
 
-# Partitions: each drive letter's own total capacity (not free space), so
+# Partition: each drive letter's own total capacity (not free space), so
 # "Disk C: 200GB" is the whole C: volume, matching what the customer sees
-# in File Explorer - not tied to the physical disk names above.
-$partitionParts = @()
+# in File Explorer - not tied to the physical disk names above. One line
+# per drive letter, not joined together, so it stays readable with 3+ disks.
 $volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' } | Sort-Object DriveLetter)
-foreach ($vol in $volumes) {
-    $totalGB = [math]::Round($vol.Size / 1GB, 0)
-    $partitionParts += "Disk $($vol.DriveLetter): ${totalGB}GB"
-}
-if ($partitionParts.Count -gt 0) {
-    $storageLines.Add("Partitions: " + ($partitionParts -join ' + '))
+if ($volumes.Count -gt 0) {
+    $storageLines.Add("Partition:")
+    foreach ($vol in $volumes) {
+        $totalGB = [math]::Round($vol.Size / 1GB, 0)
+        $storageLines.Add("Disk $($vol.DriveLetter): ${totalGB}GB")
+    }
 }
 
 $storageText = $storageLines -join "`r`n"
