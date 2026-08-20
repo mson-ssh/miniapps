@@ -27,7 +27,7 @@ $SelfUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1"
 $CommitApiUrl = $SelfUrl -replace '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/.*$', 'https://api.github.com/repos/$1/$2/commits/$3'
 
 # Canonical source Publish-InfoExe compiles into info.exe (see info-app/ in
-# the repo) - kept in sync by hand with Setup.ps1's own Invoke-InfoTesting.
+# the repo) - kept in sync by hand with Setup.ps1's own Show-SystemInfo.
 $InfoSourceUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/info-app/Info.ps1"
 
 # info.exe's icon - minimalist "i" on Wikimedia Commons.
@@ -601,69 +601,6 @@ $DebloatScript = {
         Write-Output "[Debloat] Win11Debloat (-RunDefaults -Silent): OK"
     }
     catch { Write-Output "[Debloat] Win11Debloat: FAILED - $($_.Exception.Message)" }
-}
-
-# =========================================================================
-# EMBEDDED: HARDWARE INFORMATION (was config/Get-info.ps1)
-# =========================================================================
-function Get-HardwareInfo {
-    $DesktopPath = [Environment]::GetFolderPath("Desktop")
-    $LogFile = "$DesktopPath\info.txt"
-
-    $computer = Get-CimInstance Win32_ComputerSystem
-    $bios     = Get-CimInstance Win32_BIOS
-    $cpu      = Get-CimInstance Win32_Processor | Select-Object -First 1
-    $ram      = Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum
-    $disks    = Get-CimInstance Win32_DiskDrive | Where-Object { $_.MediaType -eq 'Fixed hard disk media' }
-    $gpus     = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notlike '*Basic*' -and $_.Name -notlike '*Standard*' }
-
-    $ramGB = [math]::Round($ram.Sum / 1GB, 2)
-    $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-
-    try {
-        $videoController = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution -and $_.CurrentVerticalResolution } | Select-Object -First 1
-        if ($videoController) {
-            $screenRes = "$($videoController.CurrentHorizontalResolution)x$($videoController.CurrentVerticalResolution)"
-            $refreshRate = if ($videoController.CurrentRefreshRate) { "$($videoController.CurrentRefreshRate) Hz" } else { "N/A" }
-        }
-        else { $screenRes = "N/A"; $refreshRate = "N/A" }
-    }
-    catch { $screenRes = "N/A"; $refreshRate = "N/A" }
-
-    $report = @(
-        "================================================================"
-        "                   MINIAZ SYSTEM INFORMATION"
-        "================================================================"
-        "HOSTNAME       : $($computer.Name)"
-        "Model          : $($computer.Model)"
-        "Serial         : $($bios.SerialNumber)"
-        "CPU            : $($cpu.Name)"
-        "RAM            : $ramGB GB"
-    )
-
-    foreach ($disk in $disks) {
-        if ($disk.Size) {
-            $diskGB = [math]::Round($disk.Size / 1GB, 2)
-            $report += "Storage        : $($disk.Model) - $diskGB GB"
-        }
-    }
-    foreach ($gpu in $gpus) {
-        $report += "Graphics Card  : $($gpu.Name)"
-    }
-
-    $report += @(
-        "Resolution     : $screenRes"
-        "Refresh Rate   : $refreshRate"
-        "DATE AND TIME  : $currentTime"
-        "================================================================"
-        "[PROCESS] COMPLETED SUCCESSFULLY"
-    )
-
-    $report | Out-File -FilePath $LogFile -Encoding UTF8 -Force
-
-    # Launch decoupled from this process tree so the caller can finish immediately
-    Start-Process -FilePath "notepad.exe" -ArgumentList "`"$LogFile`"" -WindowStyle Normal
-    return $LogFile
 }
 
 # =========================================================================
@@ -1545,191 +1482,11 @@ function Show-SystemInfo {
         # the licence answer from Read-OfficeChoice.
         [ValidateSet('', 'Office', 'Wps')][string]$OfficeChoice = ''
     )
-    Write-Host "`n[System] Collecting hardware information..." -ForegroundColor Cyan
-    try {
-        $logFile = Get-HardwareInfo
-        Write-Host "[OK] Report saved to $logFile" -ForegroundColor Green
-    }
-    catch {
-        Write-Host "[ERROR] Failed to collect system information: $_" -ForegroundColor Red
-        return
-    }
-
-    New-DesktopShortcuts -OfficeChoice $OfficeChoice
-}
-
-function Invoke-Debloatware {
-    Write-Host "`n[System] Launching Win11Debloat (silent default profile)..." -ForegroundColor Cyan
-    try {
-        & ([scriptblock]::Create((Invoke-RestMethod "https://debloat.raphi.re/"))) -RunDefaults -Silent
-        Write-Host "`n[OK] Debloatware utility finished." -ForegroundColor Green
-    }
-    catch {
-        Write-Host "`n[ERROR] Failed to run Debloatware utility: $_" -ForegroundColor Red
-    }
-}
-
-function Invoke-RemoveOffice {
-    # Runs the exact same logic as the background job that fires when WPS is
-    # chosen (see $RemoveOfficeScript) - invoked directly here, in the
-    # foreground, so it can be tested/run on its own with live output.
-    Write-Host "`n[System] Force-removing Office (2016-2024 + Microsoft 365)..." -ForegroundColor Magenta
-    & $RemoveOfficeScript | ForEach-Object {
-        $color = if ($_ -match 'FAILED') { 'Red' }
-                 elseif ($_ -match '\[stderr\]') { 'Yellow' }
-                 elseif ($_ -match ': OK\b') { 'Green' }
-                 else { 'Gray' }
-        Write-Host "   $_" -ForegroundColor $color
-    }
-    Write-Host "`n[OK] Office removal finished." -ForegroundColor Green
-
-    # Open the raw, unmangled Office Tool Plus output in Notepad so it can be
-    # copy-pasted exactly as-is (a terminal screenshot loses/garbles text).
-    $rawLog = "$env:TEMP\OfficeToolPlus_stdout.log"
-    if ((Test-Path $rawLog) -and (Get-Item $rawLog).Length -gt 0) {
-        Write-Host "[Office] Raw Office Tool Plus output: $rawLog (opening in Notepad)" -ForegroundColor Cyan
-        Start-Process -FilePath "notepad.exe" -ArgumentList "`"$rawLog`"" -WindowStyle Normal
-    }
-}
-
-function Invoke-OptimizeInstall {
-    # Menu 1 + 4 + 3 off a single keypress. The Office question is asked here
-    # instead of inside the engine so everything starts only after it is
-    # answered, and the answer is handed down rather than asked twice.
-    $officeChoice = Read-OfficeChoice
-    # Return before the debloat job starts, not just before the installs: menu 5
-    # would otherwise still debloat and repartition a machine the user cancelled.
-    if ($officeChoice -eq 'Cancel') {
-        Write-Host "`n[Cancelled] Nothing was installed or changed." -ForegroundColor Yellow
-        return
-    }
-
-    Write-Host "`n[System] Starting Debloat in the background..." -ForegroundColor Magenta
-    $debloatJob = Start-Job -ScriptBlock $DebloatScript
-
-    Install-NecessaryApps -Method 'Installer' -OfficeChoice $officeChoice
-
-    # Bounded like the Config/Disk jobs: a wedged debloat must not strand the run
-    Write-Host "`n[System] Waiting for the Debloat job to finish..." -ForegroundColor Cyan
-    Wait-Job $debloatJob -Timeout $Script:JobTimeoutSec | Out-Null
-    if ($debloatJob.State -eq 'Running') {
-        Write-Host ("   [!] Debloat still running after {0} min - stopping it." -f
-            [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
-        Stop-Job -Job $debloatJob -ErrorAction SilentlyContinue
-    }
-
-    Write-Host "`n[Debloat Results]" -ForegroundColor Cyan
-    foreach ($line in (Receive-Job -Job $debloatJob)) {
-        $color = if ($line -match 'FAILED') { 'Red' } else { 'Gray' }
-        Write-Host "   $line" -ForegroundColor $color
-    }
-    if ($debloatJob.State -eq 'Failed') {
-        Write-Host "   [!] Debloat job crashed: $($debloatJob.ChildJobs[0].JobStateInfo.Reason.Message)" -ForegroundColor Red
-    }
-    Remove-Job $debloatJob -Force | Out-Null
-
-    # Runs last on purpose: the Office shortcuts need the suite that was just
-    # installed to be on disk, and Notepad must not pop over the live table.
-    Show-SystemInfo -OfficeChoice $officeChoice
-}
-
-# DSP0134 (SMBIOS spec) Memory Type codes, offset 0x12 of a Type 17
-# structure - shared by both the accurate raw-SMBIOS path and the
-# Win32_PhysicalMemory fallback (SMBIOSMemoryType uses the same numbering).
-$Script:MemTypeMap = @{
-    18 = "SDRAM"; 19 = "SGRAM"; 20 = "RDRAM"; 21 = "DDR"; 22 = "DDR2"
-    23 = "DDR2 FB-DIMM"; 24 = "DDR3"; 25 = "FBD2"; 26 = "DDR4"
-    27 = "LPDDR"; 28 = "LPDDR2"; 29 = "LPDDR3"; 30 = "LPDDR4"
-    32 = "HBM"; 33 = "HBM2"; 34 = "DDR5"; 35 = "LPDDR5"
-}
-
-function Get-RamModulesFromSmbios {
-    # Parses raw SMBIOS Type 17 (Memory Device) structures directly instead
-    # of using Win32_PhysicalMemory, because:
-    #  1. Win32_PhysicalMemory's FormFactor is a translated CIM enum that
-    #     does not reliably expose SMBIOS 0x0B "Row of chips" - the actual
-    #     signal for soldered/onboard RAM.
-    #  2. Its Manufacturer/Speed can be blank on builds that still work
-    #     fine when read straight from the SMBIOS string table.
-    # Returns $null (not an empty array) when the raw table can't be read,
-    # so the caller can fall back to Win32_PhysicalMemory instead of
-    # reporting "no RAM found".
-    try {
-        $raw = Get-CimInstance -Namespace 'root\wmi' -ClassName 'MSSmBios_RawSMBiosTables' -ErrorAction Stop
-        $data = [byte[]]$raw.SMBiosData
-        if (-not $data -or $data.Length -lt 4) { return $null }
-
-        $structs = New-Object System.Collections.Generic.List[object]
-        $i = 0
-        while ($i -lt ($data.Length - 4)) {
-            $type = $data[$i]
-            $length = $data[$i + 1]
-            if ($length -lt 4 -or $type -eq 127) { break }   # malformed, or End-of-Table
-            $stringsStart = $i + $length
-            $p = $stringsStart
-            while ($p -lt ($data.Length - 1)) {
-                if ($data[$p] -eq 0 -and $data[$p + 1] -eq 0) { break }
-                $p++
-            }
-            $stringsEnd = $p + 2
-            $strings = New-Object System.Collections.Generic.List[string]
-            $cur = New-Object System.Text.StringBuilder
-            for ($k = $stringsStart; $k -lt ($stringsEnd - 2); $k++) {
-                if ($data[$k] -eq 0) { [void]$strings.Add($cur.ToString()); [void]$cur.Clear() }
-                else { [void]$cur.Append([char]$data[$k]) }
-            }
-            $body = New-Object byte[] $length
-            [Array]::Copy($data, $i, $body, 0, $length)
-            [void]$structs.Add([pscustomobject]@{ Type = $type; Body = $body; Strings = $strings })
-            $i = $stringsEnd
-        }
-
-        $solderedFormFactors = @(0x05, 0x0B, 0x10)   # Chip, Row of chips, Die
-        $modules = New-Object System.Collections.Generic.List[object]
-        foreach ($s in ($structs | Where-Object { $_.Type -eq 17 })) {
-            $b = $s.Body
-            if ($b.Length -le 0x0D) { continue }
-            $rawSize = [BitConverter]::ToUInt16($b, 0x0C)
-            if ($rawSize -eq 0) { continue }   # empty slot, nothing installed
-
-            $capacity =
-                if ($rawSize -eq 0x7FFF -and $b.Length -gt 0x1F) { [int64]([BitConverter]::ToUInt32($b, 0x1C)) * 1MB }
-                elseif ($rawSize -eq 0xFFFF) { 0 }
-                else {
-                    $unit = if ($rawSize -band 0x8000) { 1KB } else { 1MB }
-                    [int64]($rawSize -band 0x7FFF) * $unit
-                }
-            if ($capacity -le 0) { continue }
-
-            $ffCode = $b[0x0E]
-            $mtCode = if ($b.Length -gt 0x12) { $b[0x12] } else { 0 }
-            $speed  = if ($b.Length -gt 0x16) { [BitConverter]::ToUInt16($b, 0x15) } else { 0 }
-            $mfrIdx = if ($b.Length -gt 0x17) { $b[0x17] } else { 0 }
-            $mfr    = if ($mfrIdx -ge 1 -and $mfrIdx -le $s.Strings.Count) { $s.Strings[$mfrIdx - 1].Trim() } else { "" }
-
-            [void]$modules.Add([pscustomobject]@{
-                CapacityBytes = $capacity
-                Manufacturer  = $mfr
-                Speed         = $speed
-                TypeCode      = [int]$mtCode
-                Soldered      = ($solderedFormFactors -contains [int]$ffCode)
-            })
-        }
-        return $modules
-    }
-    catch { return $null }
-}
-
-function Invoke-InfoTesting {
-    # Prototype: same specs Get-HardwareInfo writes to Desktop\info.txt, in a
-    # WinForms window instead of a text file (mirrors info-app/Info.ps1 in
-    # the repo - kept in sync by hand, that file has no dependency on this
-    # one). Menu-only test bed: not wired into Install-NecessaryApps or
-    # Show-SystemInfo, so it does not replace info.txt yet.
 
     # Builds/places info.exe up front, before the preview window even shows -
     # not gated behind closing that window, so it lands on the Desktop the
-    # moment this menu item runs.
+    # moment this menu item runs. (mirrors info-app/Info.ps1 in the repo -
+    # kept in sync by hand, that file has no dependency on this one)
     Publish-InfoExe
 
     Add-Type -AssemblyName System.Windows.Forms
@@ -1938,6 +1695,170 @@ function Invoke-InfoTesting {
 
     $form.Controls.Add($grid)
     [void]$form.ShowDialog()
+
+    New-DesktopShortcuts -OfficeChoice $OfficeChoice
+}
+
+function Invoke-Debloatware {
+    Write-Host "`n[System] Launching Win11Debloat (silent default profile)..." -ForegroundColor Cyan
+    try {
+        & ([scriptblock]::Create((Invoke-RestMethod "https://debloat.raphi.re/"))) -RunDefaults -Silent
+        Write-Host "`n[OK] Debloatware utility finished." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "`n[ERROR] Failed to run Debloatware utility: $_" -ForegroundColor Red
+    }
+}
+
+function Invoke-RemoveOffice {
+    # Runs the exact same logic as the background job that fires when WPS is
+    # chosen (see $RemoveOfficeScript) - invoked directly here, in the
+    # foreground, so it can be tested/run on its own with live output.
+    Write-Host "`n[System] Force-removing Office (2016-2024 + Microsoft 365)..." -ForegroundColor Magenta
+    & $RemoveOfficeScript | ForEach-Object {
+        $color = if ($_ -match 'FAILED') { 'Red' }
+                 elseif ($_ -match '\[stderr\]') { 'Yellow' }
+                 elseif ($_ -match ': OK\b') { 'Green' }
+                 else { 'Gray' }
+        Write-Host "   $_" -ForegroundColor $color
+    }
+    Write-Host "`n[OK] Office removal finished." -ForegroundColor Green
+
+    # Open the raw, unmangled Office Tool Plus output in Notepad so it can be
+    # copy-pasted exactly as-is (a terminal screenshot loses/garbles text).
+    $rawLog = "$env:TEMP\OfficeToolPlus_stdout.log"
+    if ((Test-Path $rawLog) -and (Get-Item $rawLog).Length -gt 0) {
+        Write-Host "[Office] Raw Office Tool Plus output: $rawLog (opening in Notepad)" -ForegroundColor Cyan
+        Start-Process -FilePath "notepad.exe" -ArgumentList "`"$rawLog`"" -WindowStyle Normal
+    }
+}
+
+function Invoke-OptimizeInstall {
+    # Menu 1 + 4 + 3 off a single keypress. The Office question is asked here
+    # instead of inside the engine so everything starts only after it is
+    # answered, and the answer is handed down rather than asked twice.
+    $officeChoice = Read-OfficeChoice
+    # Return before the debloat job starts, not just before the installs: menu 5
+    # would otherwise still debloat and repartition a machine the user cancelled.
+    if ($officeChoice -eq 'Cancel') {
+        Write-Host "`n[Cancelled] Nothing was installed or changed." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "`n[System] Starting Debloat in the background..." -ForegroundColor Magenta
+    $debloatJob = Start-Job -ScriptBlock $DebloatScript
+
+    Install-NecessaryApps -Method 'Installer' -OfficeChoice $officeChoice
+
+    # Bounded like the Config/Disk jobs: a wedged debloat must not strand the run
+    Write-Host "`n[System] Waiting for the Debloat job to finish..." -ForegroundColor Cyan
+    Wait-Job $debloatJob -Timeout $Script:JobTimeoutSec | Out-Null
+    if ($debloatJob.State -eq 'Running') {
+        Write-Host ("   [!] Debloat still running after {0} min - stopping it." -f
+            [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
+        Stop-Job -Job $debloatJob -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "`n[Debloat Results]" -ForegroundColor Cyan
+    foreach ($line in (Receive-Job -Job $debloatJob)) {
+        $color = if ($line -match 'FAILED') { 'Red' } else { 'Gray' }
+        Write-Host "   $line" -ForegroundColor $color
+    }
+    if ($debloatJob.State -eq 'Failed') {
+        Write-Host "   [!] Debloat job crashed: $($debloatJob.ChildJobs[0].JobStateInfo.Reason.Message)" -ForegroundColor Red
+    }
+    Remove-Job $debloatJob -Force | Out-Null
+
+    # Runs last on purpose: the Office shortcuts need the suite that was just
+    # installed to be on disk.
+    Show-SystemInfo -OfficeChoice $officeChoice
+}
+
+# DSP0134 (SMBIOS spec) Memory Type codes, offset 0x12 of a Type 17
+# structure - shared by both the accurate raw-SMBIOS path and the
+# Win32_PhysicalMemory fallback (SMBIOSMemoryType uses the same numbering).
+$Script:MemTypeMap = @{
+    18 = "SDRAM"; 19 = "SGRAM"; 20 = "RDRAM"; 21 = "DDR"; 22 = "DDR2"
+    23 = "DDR2 FB-DIMM"; 24 = "DDR3"; 25 = "FBD2"; 26 = "DDR4"
+    27 = "LPDDR"; 28 = "LPDDR2"; 29 = "LPDDR3"; 30 = "LPDDR4"
+    32 = "HBM"; 33 = "HBM2"; 34 = "DDR5"; 35 = "LPDDR5"
+}
+
+function Get-RamModulesFromSmbios {
+    # Parses raw SMBIOS Type 17 (Memory Device) structures directly instead
+    # of using Win32_PhysicalMemory, because:
+    #  1. Win32_PhysicalMemory's FormFactor is a translated CIM enum that
+    #     does not reliably expose SMBIOS 0x0B "Row of chips" - the actual
+    #     signal for soldered/onboard RAM.
+    #  2. Its Manufacturer/Speed can be blank on builds that still work
+    #     fine when read straight from the SMBIOS string table.
+    # Returns $null (not an empty array) when the raw table can't be read,
+    # so the caller can fall back to Win32_PhysicalMemory instead of
+    # reporting "no RAM found".
+    try {
+        $raw = Get-CimInstance -Namespace 'root\wmi' -ClassName 'MSSmBios_RawSMBiosTables' -ErrorAction Stop
+        $data = [byte[]]$raw.SMBiosData
+        if (-not $data -or $data.Length -lt 4) { return $null }
+
+        $structs = New-Object System.Collections.Generic.List[object]
+        $i = 0
+        while ($i -lt ($data.Length - 4)) {
+            $type = $data[$i]
+            $length = $data[$i + 1]
+            if ($length -lt 4 -or $type -eq 127) { break }   # malformed, or End-of-Table
+            $stringsStart = $i + $length
+            $p = $stringsStart
+            while ($p -lt ($data.Length - 1)) {
+                if ($data[$p] -eq 0 -and $data[$p + 1] -eq 0) { break }
+                $p++
+            }
+            $stringsEnd = $p + 2
+            $strings = New-Object System.Collections.Generic.List[string]
+            $cur = New-Object System.Text.StringBuilder
+            for ($k = $stringsStart; $k -lt ($stringsEnd - 2); $k++) {
+                if ($data[$k] -eq 0) { [void]$strings.Add($cur.ToString()); [void]$cur.Clear() }
+                else { [void]$cur.Append([char]$data[$k]) }
+            }
+            $body = New-Object byte[] $length
+            [Array]::Copy($data, $i, $body, 0, $length)
+            [void]$structs.Add([pscustomobject]@{ Type = $type; Body = $body; Strings = $strings })
+            $i = $stringsEnd
+        }
+
+        $solderedFormFactors = @(0x05, 0x0B, 0x10)   # Chip, Row of chips, Die
+        $modules = New-Object System.Collections.Generic.List[object]
+        foreach ($s in ($structs | Where-Object { $_.Type -eq 17 })) {
+            $b = $s.Body
+            if ($b.Length -le 0x0D) { continue }
+            $rawSize = [BitConverter]::ToUInt16($b, 0x0C)
+            if ($rawSize -eq 0) { continue }   # empty slot, nothing installed
+
+            $capacity =
+                if ($rawSize -eq 0x7FFF -and $b.Length -gt 0x1F) { [int64]([BitConverter]::ToUInt32($b, 0x1C)) * 1MB }
+                elseif ($rawSize -eq 0xFFFF) { 0 }
+                else {
+                    $unit = if ($rawSize -band 0x8000) { 1KB } else { 1MB }
+                    [int64]($rawSize -band 0x7FFF) * $unit
+                }
+            if ($capacity -le 0) { continue }
+
+            $ffCode = $b[0x0E]
+            $mtCode = if ($b.Length -gt 0x12) { $b[0x12] } else { 0 }
+            $speed  = if ($b.Length -gt 0x16) { [BitConverter]::ToUInt16($b, 0x15) } else { 0 }
+            $mfrIdx = if ($b.Length -gt 0x17) { $b[0x17] } else { 0 }
+            $mfr    = if ($mfrIdx -ge 1 -and $mfrIdx -le $s.Strings.Count) { $s.Strings[$mfrIdx - 1].Trim() } else { "" }
+
+            [void]$modules.Add([pscustomobject]@{
+                CapacityBytes = $capacity
+                Manufacturer  = $mfr
+                Speed         = $speed
+                TypeCode      = [int]$mtCode
+                Soldered      = ($solderedFormFactors -contains [int]$ffCode)
+            })
+        }
+        return $modules
+    }
+    catch { return $null }
 }
 
 function New-InfoIcon {
@@ -2020,10 +1941,9 @@ function Publish-InfoExe {
 $MenuOptions = @(
     @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel" },
     @{ Label = "Install Apps (Winget)";    Desc = "Install via Windows Package Manager" },
-    @{ Label = "System Information";        Desc = "Export hardware report to Desktop" },
+    @{ Label = "System Information";        Desc = "Hardware info in a GUI window + build info.exe" },
     @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
     @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
-    @{ Label = "Information Testing";       Desc = "Prototype: hardware info in a GUI window" },
     @{ Label = "Exit";                      Desc = "Close the tool" }
 )
 
@@ -2114,8 +2034,6 @@ function Read-MenuChoice {
             'NumPad5'   { return 4 }
             'D6'        { return 5 }
             'NumPad6'   { return 5 }
-            'D7'        { return 6 }
-            'NumPad7'   { return 6 }
             # A highlights Optimize Install; Enter then runs it
             'A'         { $selectedIndex = 4 }
         }
@@ -2131,17 +2049,16 @@ while ($true) {
     switch ($choice) {
         0 { Install-NecessaryApps -Method 'Installer' }
         1 { Install-NecessaryApps -Method 'Winget' }
-        2 { Show-SystemInfo }
+        2 {
+            # Closing the info window is already the "I'm done" signal -
+            # skip the extra "press any key" pause and go straight back to
+            # the menu instead of requiring a second confirmation.
+            Show-SystemInfo
+            continue
+        }
         3 { Invoke-Debloatware }
         4 { Invoke-OptimizeInstall }
         5 {
-            # Closing the preview window is already the "I'm done" signal -
-            # skip the extra "press any key" pause and go straight back to
-            # the menu instead of requiring a second confirmation.
-            Invoke-InfoTesting
-            continue
-        }
-        6 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
         }
