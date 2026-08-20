@@ -10,11 +10,20 @@ if (-not (Get-Module -ListAvailable -Name ps2exe)) {
 
 Import-Module ps2exe
 
+# Windows' own stock "information" icon (blue circle, white "i") - the same
+# one MessageBox uses - so nothing needs to ship as a binary image asset.
+Add-Type -AssemblyName System.Drawing
+$iconPath = "$PSScriptRoot\info.ico"
+$iconStream = [System.IO.File]::Create($iconPath)
+[System.Drawing.SystemIcons]::Information.Save($iconStream)
+$iconStream.Close()
+
 Invoke-ps2exe `
     -inputFile "$PSScriptRoot\Info.ps1" `
     -outputFile "$PSScriptRoot\info.exe" `
     -noConsole `
-    -title "MiniAZ System Information" `
+    -iconFile $iconPath `
+    -title "System Information" `
     -company "Minh Son AZ" `
     -version "1.0.0.0"
 

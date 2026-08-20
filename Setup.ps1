@@ -26,6 +26,10 @@ $SelfUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1"
 # live on exactly one line. Feeds the "Update" stamp in the menu header.
 $CommitApiUrl = $SelfUrl -replace '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/.*$', 'https://api.github.com/repos/$1/$2/commits/$3'
 
+# Canonical source Publish-InfoExe compiles into info.exe (see info-app/ in
+# the repo) - kept in sync by hand with Setup.ps1's own Invoke-InfoTesting.
+$InfoSourceUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/info-app/Info.ps1"
+
 # =========================================================================
 # UI FOUNDATION - encoding, terminal capability detection, glyph set
 # Set first so even elevation errors render correctly.
@@ -1901,21 +1905,46 @@ function Invoke-InfoTesting {
 }
 
 function Publish-InfoExe {
-    # Copies the pre-built info.exe (built from info-app/Build-InfoExe.ps1,
-    # hosted on R2 like every other binary here) to the Desktop, so the
-    # customer can re-open the hardware info window anytime later without
-    # going through Setup.ps1 again. Requires info.exe to actually exist at
-    # $R2/info.exe - fails quietly (a warning, not an error) until it does.
+    # Builds info.exe on the client machine (via the ps2exe module) instead
+    # of downloading a pre-built binary from R2, so nothing needs to be
+    # manually rebuilt and re-uploaded whenever info-app/Info.ps1 changes -
+    # trade-off: this now needs PowerShell Gallery/NuGet reachable on the
+    # client the first time, which a pre-built download did not. Only runs
+    # once per machine: skipped entirely if Desktop\info.exe already exists.
     try {
         $desktop = [Environment]::GetFolderPath('Desktop')
         $dest = Join-Path $desktop "info.exe"
-        if (-not (Test-Path $dest)) {
-            Invoke-WebRequest -Uri "$R2/info.exe" -OutFile $dest -UseBasicParsing -ErrorAction Stop
-            Write-Host "[OK] info.exe placed on Desktop." -ForegroundColor Green
+        if (Test-Path $dest) { return }
+
+        if (-not (Get-Module -ListAvailable -Name ps2exe)) {
+            if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+                Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop | Out-Null
+            }
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+            Install-Module -Name ps2exe -Scope CurrentUser -Force -ErrorAction Stop
         }
+        Import-Module ps2exe -ErrorAction Stop
+
+        $workDir = "$env:TEMP\MiniApp"
+        if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Force | Out-Null }
+        $sourcePs1 = "$workDir\Info.ps1"
+        $iconPath  = "$workDir\info.ico"
+
+        Invoke-WebRequest -Uri $InfoSourceUrl -OutFile $sourcePs1 -UseBasicParsing -ErrorAction Stop
+
+        # Windows' own stock "information" icon (blue circle, white "i") -
+        # the same one MessageBox uses - so nothing needs to ship as a
+        # binary image asset in the repo.
+        Add-Type -AssemblyName System.Drawing
+        $iconStream = [System.IO.File]::Create($iconPath)
+        [System.Drawing.SystemIcons]::Information.Save($iconStream)
+        $iconStream.Close()
+
+        Invoke-ps2exe -inputFile $sourcePs1 -outputFile $dest -noConsole -iconFile $iconPath -title "System Information" -ErrorAction Stop
+        Write-Host "[OK] info.exe built and placed on Desktop." -ForegroundColor Green
     }
     catch {
-        Write-Host "[WARN] Could not place info.exe on Desktop: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[WARN] Could not build info.exe: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
