@@ -1685,35 +1685,61 @@ function Invoke-InfoTesting {
     $form.BackColor = [System.Drawing.Color]::White
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 
-    $panel = New-Object System.Windows.Forms.TableLayoutPanel
-    $panel.Dock = "Fill"
-    $panel.ColumnCount = 2
-    $panel.AutoScroll = $true
-    $panel.Padding = New-Object System.Windows.Forms.Padding(20)
-    [void]$panel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 32)))
-    [void]$panel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 68)))
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Dock = "Fill"
+    $grid.ReadOnly = $true
+    $grid.AllowUserToAddRows = $false
+    $grid.AllowUserToDeleteRows = $false
+    $grid.AllowUserToResizeRows = $false
+    $grid.AllowUserToResizeColumns = $false
+    $grid.RowHeadersVisible = $false
+    $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+    $grid.BackgroundColor = [System.Drawing.Color]::White
+    $grid.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+    $grid.CellBorderStyle = [System.Windows.Forms.DataGridViewCellBorderStyle]::Single
+    $grid.GridColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+    $grid.EnableHeadersVisualStyles = $false
+    $grid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::AutoSize
+    $grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::AllCells
+    $grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
+    $grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(4)
+    $grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
 
-    $boldFont = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    [void]$grid.Columns.Add("Property", "Property")
+    [void]$grid.Columns.Add("Value", "Value")
+    $grid.Columns["Property"].Width = 160
+    $grid.Columns["Property"].DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $grid.Columns["Value"].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
 
     foreach ($row in $rows) {
-        $lblKey = New-Object System.Windows.Forms.Label
-        $lblKey.Text = $row.Label
-        $lblKey.Font = $boldFont
-        $lblKey.AutoSize = $true
-        $lblKey.Margin = New-Object System.Windows.Forms.Padding(0, 6, 12, 6)
-
-        $lblVal = New-Object System.Windows.Forms.Label
-        $lblVal.Text = $row.Value
-        $lblVal.AutoSize = $true
-        $lblVal.MaximumSize = New-Object System.Drawing.Size(340, 0)
-        $lblVal.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 6)
-
-        [void]$panel.Controls.Add($lblKey)
-        [void]$panel.Controls.Add($lblVal)
+        [void]$grid.Rows.Add($row.Label, $row.Value)
     }
 
-    $form.Controls.Add($panel)
+    $form.Controls.Add($grid)
     [void]$form.ShowDialog()
+
+    Publish-InfoExe
+}
+
+function Publish-InfoExe {
+    # Copies the pre-built info.exe (built from info-app/Build-InfoExe.ps1,
+    # hosted on R2 like every other binary here) to the Desktop, so the
+    # customer can re-open the hardware info window anytime later without
+    # going through Setup.ps1 again. Requires info.exe to actually exist at
+    # $R2/info.exe - fails quietly (a warning, not an error) until it does.
+    try {
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $dest = Join-Path $desktop "info.exe"
+        if (-not (Test-Path $dest)) {
+            Invoke-WebRequest -Uri "$R2/info.exe" -OutFile $dest -UseBasicParsing -ErrorAction Stop
+            Write-Host "[OK] info.exe placed on Desktop." -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host "[WARN] Could not place info.exe on Desktop: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 # =========================================================================
