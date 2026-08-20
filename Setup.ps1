@@ -1948,10 +1948,10 @@ function Publish-InfoExe {
 # INTERACTIVE MENU UI
 # =========================================================================
 $MenuOptions = @(
+    @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
     @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel" },
     @{ Label = "System Information";        Desc = "Hardware info in a GUI window + build info.exe" },
     @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
-    @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
     @{ Label = "Exit";                      Desc = "Close the tool" }
 )
 
@@ -2013,7 +2013,7 @@ function Show-Menu {
         }
     }
     Write-Host ""
-    Write-Host "  Up/Down + Enter, press a number key, or A for Optimize Install." -ForegroundColor DarkGray
+    Write-Host "  Up/Down + Enter, a number key, or A/S/I/D/Q to run directly." -ForegroundColor DarkGray
 }
 
 function Read-MenuChoice {
@@ -2040,8 +2040,13 @@ function Read-MenuChoice {
             'NumPad4'   { return 3 }
             'D5'        { return 4 }
             'NumPad5'   { return 4 }
-            # A highlights Optimize Install; Enter then runs it
-            'A'         { $selectedIndex = 3 }
+            # Direct-run letter shortcuts, one per menu item - fire immediately,
+            # no Enter needed (unlike the number keys they're identical to).
+            'A'         { return 0 }
+            'S'         { return 1 }
+            'I'         { return 2 }
+            'D'         { return 3 }
+            'Q'         { return 4 }
         }
     }
 }
@@ -2053,16 +2058,16 @@ while ($true) {
     Clear-Host
 
     switch ($choice) {
-        0 { Install-NecessaryApps -Method 'Installer' }
-        1 {
+        0 { Invoke-OptimizeInstall }
+        1 { Install-NecessaryApps -Method 'Installer' }
+        2 {
             # Closing the info window is already the "I'm done" signal -
             # skip the extra "press any key" pause and go straight back to
             # the menu instead of requiring a second confirmation.
             Show-SystemInfo
             continue
         }
-        2 { Invoke-Debloatware }
-        3 { Invoke-OptimizeInstall }
+        3 { Invoke-Debloatware }
         4 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
