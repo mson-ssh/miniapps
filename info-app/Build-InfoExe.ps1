@@ -10,37 +10,40 @@ if (-not (Get-Module -ListAvailable -Name ps2exe)) {
 
 Import-Module ps2exe
 
-# Drawn directly instead of using SystemIcons.Information: that stock icon
-# is a small, low-resolution bitmap that looks blurry/dated once Explorer
-# or the taskbar scale it up. 256x256 with anti-aliasing looks sharp instead.
+# Downloads the minimalist "i" PNG (2831x2831, transparent, from Wikimedia
+# Commons) and converts it to .ico. Downscaled to 256 with high-quality
+# bicubic + anti-aliasing rather than used at full size: ICO doesn't handle
+# arbitrarily large frames well, and shrinking from a much bigger source
+# still looks sharp - the opposite of upscaling a small one.
 Add-Type -AssemblyName System.Drawing
+$iconUrl = "https://upload.wikimedia.org/wikipedia/commons/4/43/Minimalist_info_Icon.png"
+$pngPath = "$PSScriptRoot\info-icon.png"
 $iconPath = "$PSScriptRoot\info.ico"
-$size = 256
-$bmp = New-Object System.Drawing.Bitmap($size, $size)
-$g = [System.Drawing.Graphics]::FromImage($bmp)
+
+Invoke-WebRequest -Uri $iconUrl -OutFile $pngPath -UseBasicParsing
+
+$source = [System.Drawing.Bitmap]::FromFile($pngPath)
 try {
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
-    $g.Clear([System.Drawing.Color]::Transparent)
+    $size = 256
+    $resized = New-Object System.Drawing.Bitmap($size, $size)
+    $g = [System.Drawing.Graphics]::FromImage($resized)
+    try {
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $g.DrawImage($source, 0, 0, $size, $size)
+    }
+    finally { $g.Dispose() }
 
-    $blueBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 120, 212))
-    $g.FillEllipse($blueBrush, 4, 4, $size - 8, $size - 8)
-
-    $font = New-Object System.Drawing.Font("Segoe UI", 150, [System.Drawing.FontStyle]::Bold)
-    $textSize = $g.MeasureString("i", $font)
-    $x = ($size - $textSize.Width) / 2
-    $y = ($size - $textSize.Height) / 2
-    $g.DrawString("i", $font, [System.Drawing.Brushes]::White, $x, $y)
-
-    $hIcon = $bmp.GetHicon()
+    $hIcon = $resized.GetHicon()
     $icon = [System.Drawing.Icon]::FromHandle($hIcon)
     $iconStream = [System.IO.File]::Create($iconPath)
     try { $icon.Save($iconStream) } finally { $iconStream.Close() }
     $icon.Dispose()
+    $resized.Dispose()
 }
 finally {
-    $g.Dispose()
-    $bmp.Dispose()
+    $source.Dispose()
 }
 
 Invoke-ps2exe `

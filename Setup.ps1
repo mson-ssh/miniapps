@@ -30,6 +30,9 @@ $CommitApiUrl = $SelfUrl -replace '^https://raw\.githubusercontent\.com/([^/]+)/
 # the repo) - kept in sync by hand with Setup.ps1's own Invoke-InfoTesting.
 $InfoSourceUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/info-app/Info.ps1"
 
+# info.exe's icon - minimalist "i" on Wikimedia Commons.
+$InfoIconUrl = "https://upload.wikimedia.org/wikipedia/commons/4/43/Minimalist_info_Icon.png"
+
 # =========================================================================
 # UI FOUNDATION - encoding, terminal capability detection, glyph set
 # Set first so even elevation errors render correctly.
@@ -1905,41 +1908,41 @@ function Invoke-InfoTesting {
 }
 
 function New-InfoIcon {
-    # Draws a crisp 256x256 "i" icon (blue circle, white bold "i") instead
-    # of using SystemIcons.Information - that stock icon is a small,
-    # low-resolution bitmap (looks blurry/dated when Explorer/taskbar scale
-    # it up). No SVG renderer ships with plain .NET/PowerShell, so this
-    # draws it directly with GDI+ at high resolution with anti-aliasing
-    # instead, which is what actually makes it look sharp.
+    # Downloads the minimalist "i" PNG (2831x2831, transparent) and converts
+    # it to .ico for ps2exe -iconFile. Downscaled to 256 with high-quality
+    # bicubic + anti-aliasing rather than used at full size: ICO doesn't
+    # handle arbitrarily large frames well, and shrinking from a much
+    # bigger source still looks sharp - the opposite of upscaling a small one.
     param([string]$Path)
 
     Add-Type -AssemblyName System.Drawing
-    $size = 256
-    $bmp = New-Object System.Drawing.Bitmap($size, $size)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $pngPath = "$env:TEMP\MiniApp\info-icon.png"
+    $pngDir = Split-Path $pngPath -Parent
+    if (-not (Test-Path $pngDir)) { New-Item -ItemType Directory -Path $pngDir -Force | Out-Null }
+    Invoke-WebRequest -Uri $InfoIconUrl -OutFile $pngPath -UseBasicParsing -ErrorAction Stop
+
+    $source = [System.Drawing.Bitmap]::FromFile($pngPath)
     try {
-        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
-        $g.Clear([System.Drawing.Color]::Transparent)
+        $size = 256
+        $resized = New-Object System.Drawing.Bitmap($size, $size)
+        $g = [System.Drawing.Graphics]::FromImage($resized)
+        try {
+            $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+            $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $g.DrawImage($source, 0, 0, $size, $size)
+        }
+        finally { $g.Dispose() }
 
-        $blueBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 120, 212))
-        $g.FillEllipse($blueBrush, 4, 4, $size - 8, $size - 8)
-
-        $font = New-Object System.Drawing.Font("Segoe UI", 150, [System.Drawing.FontStyle]::Bold)
-        $textSize = $g.MeasureString("i", $font)
-        $x = ($size - $textSize.Width) / 2
-        $y = ($size - $textSize.Height) / 2
-        $g.DrawString("i", $font, [System.Drawing.Brushes]::White, $x, $y)
-
-        $hIcon = $bmp.GetHicon()
+        $hIcon = $resized.GetHicon()
         $icon = [System.Drawing.Icon]::FromHandle($hIcon)
         $fs = [System.IO.File]::Create($Path)
         try { $icon.Save($fs) } finally { $fs.Close() }
         $icon.Dispose()
+        $resized.Dispose()
     }
     finally {
-        $g.Dispose()
-        $bmp.Dispose()
+        $source.Dispose()
     }
 }
 
