@@ -1910,6 +1910,15 @@ function Publish-InfoExe {
         $dest = Join-Path $desktop "info.exe"
         if (Test-Path $dest) { return }
 
+        # The elevation relaunch (top of this script) sets -ExecutionPolicy
+        # Bypass for the process, but only when Setup.ps1 actually had to
+        # relaunch itself; a console already running as Administrator skips
+        # that and keeps whatever policy the user/machine had (often
+        # Restricted). Import-Module loads ps2exe's .psm1 from disk, which
+        # is subject to that policy even though the outer script (run via
+        # iex) is not - so it must be set explicitly, process-scoped only.
+        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
+
         if (-not (Get-Module -ListAvailable -Name ps2exe)) {
             if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
                 Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop | Out-Null
