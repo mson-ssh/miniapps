@@ -1949,7 +1949,6 @@ function Publish-InfoExe {
 # =========================================================================
 $MenuOptions = @(
     @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel" },
-    @{ Label = "Install Apps (Winget)";    Desc = "Install via Windows Package Manager" },
     @{ Label = "System Information";        Desc = "Hardware info in a GUI window + build info.exe" },
     @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
     @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
@@ -2041,10 +2040,8 @@ function Read-MenuChoice {
             'NumPad4'   { return 3 }
             'D5'        { return 4 }
             'NumPad5'   { return 4 }
-            'D6'        { return 5 }
-            'NumPad6'   { return 5 }
             # A highlights Optimize Install; Enter then runs it
-            'A'         { $selectedIndex = 4 }
+            'A'         { $selectedIndex = 3 }
         }
     }
 }
@@ -2057,17 +2054,16 @@ while ($true) {
 
     switch ($choice) {
         0 { Install-NecessaryApps -Method 'Installer' }
-        1 { Install-NecessaryApps -Method 'Winget' }
-        2 {
+        1 {
             # Closing the info window is already the "I'm done" signal -
             # skip the extra "press any key" pause and go straight back to
             # the menu instead of requiring a second confirmation.
             Show-SystemInfo
             continue
         }
-        3 { Invoke-Debloatware }
-        4 { Invoke-OptimizeInstall }
-        5 {
+        2 { Invoke-Debloatware }
+        3 { Invoke-OptimizeInstall }
+        4 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
         }
