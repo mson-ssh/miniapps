@@ -5,6 +5,12 @@
 # Usage: irm https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1 | iex
 # =========================================================================
 
+# First possible line of output: "irm | iex" has to finish downloading this
+# whole file before any of it can run, so nothing can be shown during that
+# fetch - this line at least fires the instant execution starts, instead of
+# staying blank all the way through UAC elevation too.
+Write-Host "MiniApp is starting..." -ForegroundColor Cyan
+
 # Configure TLS 1.2 to prevent GitHub downloads from being blocked
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
@@ -118,6 +124,7 @@ if (-not $isAdmin) {
     }
     else {
         # Running from memory (irm | iex): no way to read own source, so re-fetch
+        Write-Host "Requesting administrator rights..." -ForegroundColor Cyan
         $tempScript = "$env:TEMP\MiniApp\Setup_elevated.ps1"
         try {
             # -OutFile does not create parent dirs; MiniApp does not exist yet here
