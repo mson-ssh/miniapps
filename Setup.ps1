@@ -1904,67 +1904,74 @@ function Invoke-InfoTesting {
     Publish-InfoExe
 }
 
-function Build-InfoExeLocally {
-    # Fallback for Publish-InfoExe: compiles info-app/Info.ps1's source into
-    # info.exe on the client machine via the ps2exe module, instead of a
-    # pre-built binary. Needs PowerShell Gallery/NuGet reachable on the
-    # client - only used when the R2 download failed.
-    param([string]$Dest)
+function New-InfoIcon {
+    # Draws a crisp 256x256 "i" icon (blue circle, white bold "i") instead
+    # of using SystemIcons.Information - that stock icon is a small,
+    # low-resolution bitmap (looks blurry/dated when Explorer/taskbar scale
+    # it up). No SVG renderer ships with plain .NET/PowerShell, so this
+    # draws it directly with GDI+ at high resolution with anti-aliasing
+    # instead, which is what actually makes it look sharp.
+    param([string]$Path)
 
-    if (-not (Get-Module -ListAvailable -Name ps2exe)) {
-        if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
-            Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop | Out-Null
-        }
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-        Install-Module -Name ps2exe -Scope CurrentUser -Force -ErrorAction Stop
-    }
-    Import-Module ps2exe -ErrorAction Stop
-
-    $workDir = "$env:TEMP\MiniApp"
-    if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Force | Out-Null }
-    $sourcePs1 = "$workDir\Info.ps1"
-    $iconPath  = "$workDir\info.ico"
-
-    Invoke-WebRequest -Uri $InfoSourceUrl -OutFile $sourcePs1 -UseBasicParsing -ErrorAction Stop
-
-    # Windows' own stock "information" icon (blue circle, white "i") - the
-    # same one MessageBox uses - so nothing needs to ship as a binary image
-    # asset in the repo.
     Add-Type -AssemblyName System.Drawing
-    $iconStream = [System.IO.File]::Create($iconPath)
-    [System.Drawing.SystemIcons]::Information.Save($iconStream)
-    $iconStream.Close()
+    $size = 256
+    $bmp = New-Object System.Drawing.Bitmap($size, $size)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    try {
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+        $g.Clear([System.Drawing.Color]::Transparent)
 
-    Invoke-ps2exe -inputFile $sourcePs1 -outputFile $Dest -noConsole -iconFile $iconPath -title "System Information" -ErrorAction Stop
+        $blueBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 120, 212))
+        $g.FillEllipse($blueBrush, 4, 4, $size - 8, $size - 8)
+
+        $font = New-Object System.Drawing.Font("Segoe UI", 150, [System.Drawing.FontStyle]::Bold)
+        $textSize = $g.MeasureString("i", $font)
+        $x = ($size - $textSize.Width) / 2
+        $y = ($size - $textSize.Height) / 2
+        $g.DrawString("i", $font, [System.Drawing.Brushes]::White, $x, $y)
+
+        $hIcon = $bmp.GetHicon()
+        $icon = [System.Drawing.Icon]::FromHandle($hIcon)
+        $fs = [System.IO.File]::Create($Path)
+        try { $icon.Save($fs) } finally { $fs.Close() }
+        $icon.Dispose()
+    }
+    finally {
+        $g.Dispose()
+        $bmp.Dispose()
+    }
 }
 
 function Publish-InfoExe {
-    # Places info.exe on the Desktop so the customer can reopen the hardware
+    # Builds info.exe on the client machine (via the ps2exe module) and
+    # places it on the Desktop, so the customer can reopen the hardware
     # info window anytime later without going through Setup.ps1 again.
-    # Primary: download the pre-built binary from R2 (fast, reliable).
-    # Fallback: build it locally with ps2exe if that download fails (e.g.
-    # info.exe hasn't been uploaded to R2 yet, or R2 is unreachable).
     # Only runs once per machine: skipped entirely if info.exe already exists.
-    $desktop = [Environment]::GetFolderPath('Desktop')
-    $dest = Join-Path $desktop "info.exe"
-    if (Test-Path $dest) { return }
-
     try {
-        Invoke-WebRequest -Uri "$R2/info.exe" -OutFile $dest -UseBasicParsing -ErrorAction Stop
-        Write-Host "[OK] info.exe placed on Desktop." -ForegroundColor Green
-        return
-    }
-    catch {
-        # Clean up a partial/failed download so it's not mistaken for a
-        # finished info.exe on a later run (the Test-Path check above would
-        # then skip rebuilding it forever).
-        Remove-Item -Path $dest -Force -ErrorAction SilentlyContinue
-        Write-Host "[System] R2 download failed ($($_.Exception.Message)), building info.exe locally instead..." -ForegroundColor Yellow
-    }
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $dest = Join-Path $desktop "info.exe"
+        if (Test-Path $dest) { return }
 
-    try {
-        Build-InfoExeLocally -Dest $dest
-        Write-Host "[OK] info.exe built locally and placed on Desktop." -ForegroundColor Green
+        if (-not (Get-Module -ListAvailable -Name ps2exe)) {
+            if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+                Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop | Out-Null
+            }
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+            Install-Module -Name ps2exe -Scope CurrentUser -Force -ErrorAction Stop
+        }
+        Import-Module ps2exe -ErrorAction Stop
+
+        $workDir = "$env:TEMP\MiniApp"
+        if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Force | Out-Null }
+        $sourcePs1 = "$workDir\Info.ps1"
+        $iconPath  = "$workDir\info.ico"
+
+        Invoke-WebRequest -Uri $InfoSourceUrl -OutFile $sourcePs1 -UseBasicParsing -ErrorAction Stop
+        New-InfoIcon -Path $iconPath
+
+        Invoke-ps2exe -inputFile $sourcePs1 -outputFile $dest -noConsole -iconFile $iconPath -title "System Information" -ErrorAction Stop
+        Write-Host "[OK] info.exe built and placed on Desktop." -ForegroundColor Green
     }
     catch {
         Write-Host "[WARN] Could not build info.exe: $($_.Exception.Message)" -ForegroundColor Yellow

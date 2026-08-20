@@ -10,13 +10,38 @@ if (-not (Get-Module -ListAvailable -Name ps2exe)) {
 
 Import-Module ps2exe
 
-# Windows' own stock "information" icon (blue circle, white "i") - the same
-# one MessageBox uses - so nothing needs to ship as a binary image asset.
+# Drawn directly instead of using SystemIcons.Information: that stock icon
+# is a small, low-resolution bitmap that looks blurry/dated once Explorer
+# or the taskbar scale it up. 256x256 with anti-aliasing looks sharp instead.
 Add-Type -AssemblyName System.Drawing
 $iconPath = "$PSScriptRoot\info.ico"
-$iconStream = [System.IO.File]::Create($iconPath)
-[System.Drawing.SystemIcons]::Information.Save($iconStream)
-$iconStream.Close()
+$size = 256
+$bmp = New-Object System.Drawing.Bitmap($size, $size)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+try {
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+    $g.Clear([System.Drawing.Color]::Transparent)
+
+    $blueBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 120, 212))
+    $g.FillEllipse($blueBrush, 4, 4, $size - 8, $size - 8)
+
+    $font = New-Object System.Drawing.Font("Segoe UI", 150, [System.Drawing.FontStyle]::Bold)
+    $textSize = $g.MeasureString("i", $font)
+    $x = ($size - $textSize.Width) / 2
+    $y = ($size - $textSize.Height) / 2
+    $g.DrawString("i", $font, [System.Drawing.Brushes]::White, $x, $y)
+
+    $hIcon = $bmp.GetHicon()
+    $icon = [System.Drawing.Icon]::FromHandle($hIcon)
+    $iconStream = [System.IO.File]::Create($iconPath)
+    try { $icon.Save($iconStream) } finally { $iconStream.Close() }
+    $icon.Dispose()
+}
+finally {
+    $g.Dispose()
+    $bmp.Dispose()
+}
 
 Invoke-ps2exe `
     -inputFile "$PSScriptRoot\Info.ps1" `

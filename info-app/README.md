@@ -26,8 +26,9 @@ nhất, không cần build `.exe`.
 ```
 
 Lần đầu sẽ tự cài module `ps2exe` (từ PowerShell Gallery, cần mạng). Xong sẽ ra file `info.exe`
-ngay trong thư mục này, kèm icon "i" (dùng `SystemIcons.Information` có sẵn của Windows) — chạy
-thử bằng cách double-click hoặc `.\info.exe`.
+ngay trong thư mục này, kèm icon "i" tự vẽ (vòng tròn xanh, chữ "i" trắng, 256x256 có
+anti-alias — sắc nét hơn icon `SystemIcons.Information` có sẵn của Windows vốn độ phân giải
+thấp) — chạy thử bằng cách double-click hoặc `.\info.exe`.
 
 Script này **không cần chạy để tính năng hoạt động thật** — `Setup.ps1` tự build trên máy khách
 rồi, đây chỉ để anh xem trước file `.exe` trông ra sao trên máy dev của mình.
