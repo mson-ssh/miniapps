@@ -67,7 +67,28 @@ $storageText = ($disks | Where-Object { $_.Size } | ForEach-Object {
 }) -join "`r`n"
 if (-not $storageText) { $storageText = "N/A" }
 
-$gpuText = ($gpus | ForEach-Object { $_.Name }) -join "`r`n"
+# Split into iGPU (Intel/AMD integrated) vs GPU (NVIDIA - always discrete -
+# plus Intel Arc and AMD's own discrete Radeon lines). AMD makes both, so
+# its integrated parts ("AMD Radeon(TM) Graphics", "Radeon Vega 8", no model
+# number) are told apart from discrete ones by the RX/R5/R7/R9 model number.
+$igpuNames = @()
+$dgpuNames = @()
+foreach ($gpu in $gpus) {
+    $name = $gpu.Name
+    if (-not $name) { continue }
+    $isDiscrete =
+        if ($name -match 'Intel') { $name -match 'Arc' }
+        elseif ($name -match 'NVIDIA') { $true }
+        elseif ($name -match 'AMD|Radeon') { $name -match '\bRX\s?\d|\bR[579]\s?\d{2}|Radeon Pro|Radeon VII|Radeon Instinct' }
+        else { $true }   # unknown vendor: assume discrete rather than hide it
+
+    if ($isDiscrete) { $dgpuNames += $name } else { $igpuNames += $name }
+}
+
+$gpuLines = @()
+if ($igpuNames.Count -gt 0) { $gpuLines += "iGPU: " + ($igpuNames -join ', ') }
+if ($dgpuNames.Count -gt 0) { $gpuLines += "GPU: " + ($dgpuNames -join ', ') }
+$gpuText = $gpuLines -join "`r`n"
 if (-not $gpuText) { $gpuText = "N/A" }
 
 $rows = @(
