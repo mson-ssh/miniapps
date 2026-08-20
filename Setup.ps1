@@ -1419,6 +1419,11 @@ function Install-NecessaryApps {
     Write-Host "`n[System] Cleaning up temporary installation files..." -ForegroundColor Cyan
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 
+    # Desktop shortcuts for whichever suite is now on disk - just installed
+    # or already there before this run. $OfficeChoice is '' for the Winget
+    # method (never asks), which falls back to detecting what is present.
+    New-DesktopShortcuts -OfficeChoice $OfficeChoice
+
     # --- Summary card ---
     $installed = @($catalog | Where-Object { $appStates[$_.Name] -like "Done*" })
     $skipped   = @($catalog | Where-Object { $appStates[$_.Name] -like "Already*" })
@@ -1450,29 +1455,18 @@ function Install-NecessaryApps {
 # =========================================================================
 # MENU ACTIONS
 # =========================================================================
-function Show-SystemInfo {
+function New-DesktopShortcuts {
+    # Neither suite puts icons on the desktop on its own, so this covers it -
+    # for whichever app ends up on disk, whether it was just installed or was
+    # already there before this run. With a known licence answer, only that
+    # suite's shortcuts go out - a WPS box must not also get Word/Excel/
+    # PowerPoint icons, and vice versa. With no context (standalone menu
+    # access, or the Winget method which never asks) fall back to detecting
+    # what is actually on the machine, so a box carrying both suites gets
+    # both sets.
     param(
-        # '' = no known context (standalone menu access): detect whichever
-        # suite is actually on disk, so a box carrying both gets both sets.
-        # 'Office' / 'Wps' = only create shortcuts for that suite, matching
-        # the licence answer from Read-OfficeChoice.
         [ValidateSet('', 'Office', 'Wps')][string]$OfficeChoice = ''
     )
-    Write-Host "`n[System] Collecting hardware information..." -ForegroundColor Cyan
-    try {
-        $logFile = Get-HardwareInfo
-        Write-Host "[OK] Report saved to $logFile" -ForegroundColor Green
-    }
-    catch {
-        Write-Host "[ERROR] Failed to collect system information: $_" -ForegroundColor Red
-        return
-    }
-
-    # Neither suite puts icons on the desktop, so do it here. With a known
-    # licence answer, only that suite's shortcuts go out - a WPS box must not
-    # also get Word/Excel/PowerPoint icons, and vice versa. With no context
-    # (standalone menu access) fall back to detecting what is actually on the
-    # machine, so a box carrying both suites gets both sets.
     try {
         $desktop = [Environment]::GetFolderPath('Desktop')
         $createOffice = ($OfficeChoice -ne 'Wps')
@@ -1534,6 +1528,27 @@ function Show-SystemInfo {
     catch {
         Write-Host "[WARN] Could not create desktop shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
     }
+}
+
+function Show-SystemInfo {
+    param(
+        # '' = no known context (standalone menu access): detect whichever
+        # suite is actually on disk, so a box carrying both gets both sets.
+        # 'Office' / 'Wps' = only create shortcuts for that suite, matching
+        # the licence answer from Read-OfficeChoice.
+        [ValidateSet('', 'Office', 'Wps')][string]$OfficeChoice = ''
+    )
+    Write-Host "`n[System] Collecting hardware information..." -ForegroundColor Cyan
+    try {
+        $logFile = Get-HardwareInfo
+        Write-Host "[OK] Report saved to $logFile" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "[ERROR] Failed to collect system information: $_" -ForegroundColor Red
+        return
+    }
+
+    New-DesktopShortcuts -OfficeChoice $OfficeChoice
 }
 
 function Invoke-Debloatware {
