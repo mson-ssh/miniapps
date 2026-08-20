@@ -1626,6 +1626,96 @@ function Invoke-OptimizeInstall {
     Show-SystemInfo -OfficeChoice $officeChoice
 }
 
+function Invoke-InfoTesting {
+    # Prototype: same specs Get-HardwareInfo writes to Desktop\info.txt, in a
+    # WinForms window instead of a text file (mirrors info-app/Info.ps1 in
+    # the repo - kept in sync by hand, that file has no dependency on this
+    # one). Menu-only test bed: not wired into Install-NecessaryApps or
+    # Show-SystemInfo, so it does not replace info.txt yet.
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $computer = Get-CimInstance Win32_ComputerSystem
+    $bios     = Get-CimInstance Win32_BIOS
+    $cpu      = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $ram      = Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum
+    $disks    = Get-CimInstance Win32_DiskDrive | Where-Object { $_.MediaType -eq 'Fixed hard disk media' }
+    $gpus     = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notlike '*Basic*' -and $_.Name -notlike '*Standard*' }
+
+    $ramGB = [math]::Round($ram.Sum / 1GB, 2)
+    $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+    try {
+        $videoController = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution -and $_.CurrentVerticalResolution } | Select-Object -First 1
+        if ($videoController) {
+            $screenRes = "$($videoController.CurrentHorizontalResolution)x$($videoController.CurrentVerticalResolution)"
+            $refreshRate = if ($videoController.CurrentRefreshRate) { "$($videoController.CurrentRefreshRate) Hz" } else { "N/A" }
+        }
+        else { $screenRes = "N/A"; $refreshRate = "N/A" }
+    }
+    catch { $screenRes = "N/A"; $refreshRate = "N/A" }
+
+    $storageText = ($disks | Where-Object { $_.Size } | ForEach-Object {
+        "$($_.Model) - $([math]::Round($_.Size / 1GB, 2)) GB"
+    }) -join "`r`n"
+    if (-not $storageText) { $storageText = "N/A" }
+
+    $gpuText = ($gpus | ForEach-Object { $_.Name }) -join "`r`n"
+    if (-not $gpuText) { $gpuText = "N/A" }
+
+    $rows = @(
+        @{ Label = "Hostname";      Value = "$($computer.Name)" }
+        @{ Label = "Model";         Value = "$($computer.Model)" }
+        @{ Label = "Serial";        Value = "$($bios.SerialNumber)" }
+        @{ Label = "CPU";           Value = "$($cpu.Name)" }
+        @{ Label = "RAM";           Value = "$ramGB GB" }
+        @{ Label = "Storage";       Value = $storageText }
+        @{ Label = "Graphics Card"; Value = $gpuText }
+        @{ Label = "Resolution";    Value = $screenRes }
+        @{ Label = "Refresh Rate";  Value = $refreshRate }
+        @{ Label = "Date and Time"; Value = $currentTime }
+    )
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "MiniAZ System Information"
+    $form.Size = New-Object System.Drawing.Size(560, 520)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.BackColor = [System.Drawing.Color]::White
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = "Fill"
+    $panel.ColumnCount = 2
+    $panel.AutoScroll = $true
+    $panel.Padding = New-Object System.Windows.Forms.Padding(20)
+    [void]$panel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 32)))
+    [void]$panel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 68)))
+
+    $boldFont = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+
+    foreach ($row in $rows) {
+        $lblKey = New-Object System.Windows.Forms.Label
+        $lblKey.Text = $row.Label
+        $lblKey.Font = $boldFont
+        $lblKey.AutoSize = $true
+        $lblKey.Margin = New-Object System.Windows.Forms.Padding(0, 6, 12, 6)
+
+        $lblVal = New-Object System.Windows.Forms.Label
+        $lblVal.Text = $row.Value
+        $lblVal.AutoSize = $true
+        $lblVal.MaximumSize = New-Object System.Drawing.Size(340, 0)
+        $lblVal.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 6)
+
+        [void]$panel.Controls.Add($lblKey)
+        [void]$panel.Controls.Add($lblVal)
+    }
+
+    $form.Controls.Add($panel)
+    [void]$form.ShowDialog()
+}
+
 # =========================================================================
 # INTERACTIVE MENU UI
 # =========================================================================
@@ -1635,6 +1725,7 @@ $MenuOptions = @(
     @{ Label = "System Information";        Desc = "Export hardware report to Desktop" },
     @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
     @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
+    @{ Label = "Information Testing";       Desc = "Prototype: hardware info in a GUI window" },
     @{ Label = "Exit";                      Desc = "Close the tool" }
 )
 
@@ -1725,6 +1816,8 @@ function Read-MenuChoice {
             'NumPad5'   { return 4 }
             'D6'        { return 5 }
             'NumPad6'   { return 5 }
+            'D7'        { return 6 }
+            'NumPad7'   { return 6 }
             # A highlights Optimize Install; Enter then runs it
             'A'         { $selectedIndex = 4 }
         }
@@ -1743,7 +1836,8 @@ while ($true) {
         2 { Show-SystemInfo }
         3 { Invoke-Debloatware }
         4 { Invoke-OptimizeInstall }
-        5 {
+        5 { Invoke-InfoTesting }
+        6 {
             Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
             exit
         }
