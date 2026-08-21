@@ -1491,10 +1491,17 @@ function Show-SystemInfo {
     # the same process). Started detached, so it keeps running independently
     # even after Setup.ps1 exits.
     $infoExePath = Publish-InfoExe
-    if ($infoExePath -and (Test-Path $infoExePath)) {
-        Start-Process -FilePath $infoExePath
+    # Two separate ifs, not "-and": PowerShell's -and always evaluates both
+    # sides (it does not short-circuit), so Test-Path would still run - and
+    # throw on a null/empty path - even when $infoExePath came back empty.
+    $launched = $false
+    if (-not [string]::IsNullOrWhiteSpace($infoExePath)) {
+        if (Test-Path -LiteralPath $infoExePath) {
+            Start-Process -FilePath $infoExePath
+            $launched = $true
+        }
     }
-    else {
+    if (-not $launched) {
         Write-Host "[WARN] info.exe could not be built - skipping the info window." -ForegroundColor Yellow
     }
 
