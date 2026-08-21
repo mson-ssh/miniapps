@@ -31,9 +31,6 @@ $CommitApiUrl = $SelfUrl -replace '^https://raw\.githubusercontent\.com/([^/]+)/
 # just builds and launches the compiled exe.
 $InfoSourceUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/info-app/Info.ps1"
 
-# info.exe's icon - minimalist "i" on Wikimedia Commons.
-$InfoIconUrl = "https://upload.wikimedia.org/wikipedia/commons/4/43/Minimalist_info_Icon.png"
-
 # =========================================================================
 # UI FOUNDATION - encoding, terminal capability detection, glyph set
 # Set first so even elevation errors render correctly.
@@ -1584,41 +1581,113 @@ function Invoke-OptimizeInstall {
 }
 
 function New-InfoIcon {
-    # Downloads the minimalist "i" PNG (2831x2831, transparent) and converts
-    # it to .ico for ps2exe -iconFile. Downscaled to 256 with high-quality
-    # bicubic + anti-aliasing rather than used at full size: ICO doesn't
-    # handle arbitrarily large frames well, and shrinking from a much
-    # bigger source still looks sharp - the opposite of upscaling a small one.
+    # Writes Windows' own "Information" stock icon to $Path as a multi-size
+    # .ico for ps2exe -iconFile. No download at all, so nothing here can be
+    # rate-limited or blocked.
+    #
+    # Two things matter for this not to look bad:
+    #  1. The icon's location is asked of Windows (SHGetStockIconInfo with
+    #     SHGSI_ICONLOCATION returns the DLL path plus the resource index)
+    #     rather than hardcoding an imageres.dll index, which moves between
+    #     Windows builds.
+    #  2. Every size is extracted natively instead of shipping one bitmap.
+    #     A single-frame .ico forces Windows to rescale on the fly - that is
+    #     what made earlier attempts look blurry, worst of all when a 32px
+    #     frame had to be blown up to the 48px the Desktop draws at.
     param([string]$Path)
 
     Add-Type -AssemblyName System.Drawing
-    $pngPath = "$env:TEMP\MiniApp\info-icon.png"
-    $pngDir = Split-Path $pngPath -Parent
-    if (-not (Test-Path $pngDir)) { New-Item -ItemType Directory -Path $pngDir -Force | Out-Null }
-    Invoke-WebRequest -Uri $InfoIconUrl -OutFile $pngPath -UseBasicParsing -ErrorAction Stop
 
-    $source = [System.Drawing.Bitmap]::FromFile($pngPath)
-    try {
-        $size = 256
-        $resized = New-Object System.Drawing.Bitmap($size, $size)
-        $g = [System.Drawing.Graphics]::FromImage($resized)
+    if (-not ("MiniAppStockIcon" -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class MiniAppStockIcon {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct SHSTOCKICONINFO {
+        public uint cbSize;
+        public IntPtr hIcon;
+        public int iSysImageIndex;
+        public int iIcon;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szPath;
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern int SHGetStockIconInfo(uint siid, uint uFlags, ref SHSTOCKICONINFO psii);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int PrivateExtractIcons(string szFileName, int nIconIndex,
+        int cxIcon, int cyIcon, IntPtr[] phicon, int[] piconid, int nIcons, uint flags);
+    [DllImport("user32.dll")]
+    public static extern bool DestroyIcon(IntPtr hIcon);
+}
+'@ -ErrorAction Stop
+    }
+
+    $SIID_INFO = 79            # SHSTOCKICONID: the "i" in a circle
+    $SHGSI_ICONLOCATION = 0    # return szPath + iIcon, do not create a handle
+
+    $sii = New-Object MiniAppStockIcon+SHSTOCKICONINFO
+    $sii.cbSize = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type]'MiniAppStockIcon+SHSTOCKICONINFO')
+    $hr = [MiniAppStockIcon]::SHGetStockIconInfo($SIID_INFO, $SHGSI_ICONLOCATION, [ref]$sii)
+    if ($hr -ne 0 -or -not $sii.szPath) {
+        throw "SHGetStockIconInfo failed (HRESULT $hr)"
+    }
+
+    # Largest first, the order Windows itself writes .ico files in.
+    $frames = New-Object System.Collections.Generic.List[object]
+    foreach ($size in @(256, 128, 64, 48, 32, 16)) {
+        $hIcons = New-Object IntPtr[] 1
+        $iconIds = New-Object int[] 1
+        $extracted = [MiniAppStockIcon]::PrivateExtractIcons($sii.szPath, $sii.iIcon, $size, $size, $hIcons, $iconIds, 1, 0)
+        if ($extracted -le 0 -or $hIcons[0] -eq [IntPtr]::Zero) { continue }
+
         try {
-            $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-            $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-            $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-            $g.DrawImage($source, 0, 0, $size, $size)
+            $icon = [System.Drawing.Icon]::FromHandle($hIcons[0])
+            $bmp = $icon.ToBitmap()
+            $ms = New-Object System.IO.MemoryStream
+            try {
+                # PNG-compressed frames, supported by .ico since Vista and the
+                # only sane way to carry a 256px frame.
+                $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+                [void]$frames.Add([pscustomobject]@{ Size = $size; Data = $ms.ToArray() })
+            }
+            finally { $ms.Dispose() }
+            $bmp.Dispose()
+            $icon.Dispose()
         }
-        finally { $g.Dispose() }
+        finally { [void][MiniAppStockIcon]::DestroyIcon($hIcons[0]) }
+    }
 
-        $hIcon = $resized.GetHicon()
-        $icon = [System.Drawing.Icon]::FromHandle($hIcon)
-        $fs = [System.IO.File]::Create($Path)
-        try { $icon.Save($fs) } finally { $fs.Close() }
-        $icon.Dispose()
-        $resized.Dispose()
+    if ($frames.Count -eq 0) { throw "Could not extract the Windows Information icon from $($sii.szPath)" }
+
+    # ICONDIR header, then one 16-byte ICONDIRENTRY per frame, then the frames.
+    $fs = [System.IO.File]::Create($Path)
+    $bw = New-Object System.IO.BinaryWriter($fs)
+    try {
+        $bw.Write([uint16]0)                # reserved
+        $bw.Write([uint16]1)                # 1 = icon (2 would be cursor)
+        $bw.Write([uint16]$frames.Count)
+
+        $offset = 6 + (16 * $frames.Count)
+        foreach ($f in $frames) {
+            # 256 is stored as 0: the field is one byte, so 256 does not fit.
+            $dim = if ($f.Size -ge 256) { 0 } else { $f.Size }
+            $bw.Write([byte]$dim)           # width
+            $bw.Write([byte]$dim)           # height
+            $bw.Write([byte]0)              # palette entries (0 = truecolour)
+            $bw.Write([byte]0)              # reserved
+            $bw.Write([uint16]1)            # colour planes
+            $bw.Write([uint16]32)           # bits per pixel
+            $bw.Write([uint32]$f.Data.Length)
+            $bw.Write([uint32]$offset)
+            $offset += $f.Data.Length
+        }
+        foreach ($f in $frames) { $bw.Write($f.Data) }
+        $bw.Flush()
     }
     finally {
-        $source.Dispose()
+        $bw.Dispose()
+        $fs.Dispose()
     }
 }
 
@@ -1671,13 +1740,28 @@ function Publish-InfoExe {
         $iconPath  = "$workDir\info.ico"
 
         Invoke-WebRequest -Uri $InfoSourceUrl -OutFile $sourcePs1 -UseBasicParsing -ErrorAction Stop
-        New-InfoIcon -Path $iconPath
+        # A missing icon is not worth failing the build over - ps2exe just
+        # falls back to its own default and info.exe still works.
+        $useIcon = $true
+        try { New-InfoIcon -Path $iconPath }
+        catch {
+            $useIcon = $false
+            Write-Host "[WARN] Could not build the icon, using the default: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
 
         # Piped to Out-Null: Invoke-ps2exe writes its own compile-log lines to
         # the success stream, which would otherwise land in this function's
         # return value alongside $dest below, turning a clean path string
         # into a mixed array (and breaking Test-Path/Start-Process downstream).
-        Invoke-ps2exe -inputFile $sourcePs1 -outputFile $dest -noConsole -iconFile $iconPath -title "System Information" -ErrorAction Stop | Out-Null
+        $ps2exeArgs = @{
+            inputFile   = $sourcePs1
+            outputFile  = $dest
+            noConsole   = $true
+            title       = "System Information"
+            ErrorAction = 'Stop'
+        }
+        if ($useIcon) { $ps2exeArgs['iconFile'] = $iconPath }
+        Invoke-ps2exe @ps2exeArgs | Out-Null
         Write-Host "[OK] info.exe built and placed on Desktop." -ForegroundColor Green
         return $dest
     }

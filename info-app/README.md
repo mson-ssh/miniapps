@@ -26,9 +26,13 @@ nhất, không cần build `.exe`.
 ```
 
 Lần đầu sẽ tự cài module `ps2exe` (từ PowerShell Gallery, cần mạng). Xong sẽ ra file `info.exe`
-ngay trong thư mục này, kèm icon "i" (tải PNG minimalist từ Wikimedia Commons, resize xuống
-256x256 chất lượng cao rồi convert sang `.ico`) — chạy thử bằng cách double-click hoặc
-`.\info.exe`.
+ngay trong thư mục này, kèm icon "i" — chạy thử bằng cách double-click hoặc `.\info.exe`.
+
+Icon lấy thẳng từ Windows (icon **Information** có sẵn của hệ điều hành). Vị trí của nó được hỏi
+qua `SHGetStockIconInfo` chứ không hardcode chỉ số trong `imageres.dll` — chỉ số đó đổi giữa các
+bản Windows. Icon được rút ra ở **nhiều kích thước** (256/128/64/48/32/16) rồi ghép thành một
+file `.ico` đa lớp, nên sắc nét ở mọi nơi; file `.ico` chỉ có một kích thước sẽ bị Windows co
+giãn lúc hiển thị và trông nhoè.
 
 Script này **không cần chạy để tính năng hoạt động thật** — `Setup.ps1` tự build trên máy khách
 rồi, đây chỉ để anh xem trước file `.exe` trông ra sao trên máy dev của mình.
