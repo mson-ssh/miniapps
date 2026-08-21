@@ -1626,13 +1626,26 @@ function Publish-InfoExe {
     # Builds info.exe on the client machine (via the ps2exe module) and
     # places it on the Desktop, so the customer can reopen the hardware
     # info window anytime later without going through Setup.ps1 again.
-    # Only runs once per machine: skipped entirely if info.exe already exists.
-    # Returns the built/existing path so the caller can launch it, or $null
-    # if the build failed.
+    # Returns the built path so the caller can launch it, or $null if the
+    # build failed and no earlier copy is on the Desktop.
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $dest = Join-Path $desktop "info.exe"
     try {
-        $desktop = [Environment]::GetFolderPath('Desktop')
-        $dest = Join-Path $desktop "info.exe"
-        if (Test-Path $dest) { return $dest }
+        # Rebuilt on every run rather than skipped when the file is already
+        # there. The old "return early if it exists" check meant the very
+        # first build stayed on that machine forever - later fixes to
+        # Info.ps1 could never reach a box that had run this once.
+        Write-Host "[System] Building info.exe..." -ForegroundColor Cyan
+
+        # A copy left open from a previous run holds a write lock on the
+        # file, which would fail the build. Own errors swallowed separately
+        # so a process that cannot be inspected does not abort the build.
+        try {
+            Get-Process -Name 'info' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -eq $dest } |
+                Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+        catch { }
 
         # The elevation relaunch (top of this script) sets -ExecutionPolicy
         # Bypass for the process, but only when Setup.ps1 actually had to
@@ -1670,6 +1683,12 @@ function Publish-InfoExe {
     }
     catch {
         Write-Host "[WARN] Could not build info.exe: $($_.Exception.Message)" -ForegroundColor Yellow
+        # A build from an earlier run may still be sitting on the Desktop.
+        # Opening that is better than opening nothing, even if it is stale.
+        if (Test-Path $dest) {
+            Write-Host "[System] Using the info.exe already on the Desktop." -ForegroundColor DarkGray
+            return $dest
+        }
     }
 }
 
