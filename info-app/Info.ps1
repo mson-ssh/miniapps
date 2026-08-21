@@ -333,9 +333,16 @@ $grid.Add_CellPainting({
     # wide the OS name renders, so it has to be measured before it can be placed.
     $textX = $e.CellBounds.X + 6
     $dotSize = 10
-    $textRect = New-Object System.Drawing.Rectangle($textX, $e.CellBounds.Y, ($e.CellBounds.Width - $textX - $dotSize - 14), $e.CellBounds.Height)
+    # Width measured from the cell's right edge, not from CellBounds.Width:
+    # textX is an absolute coordinate while Width is relative, so subtracting
+    # one from the other loses the whole Property-column offset (~190px
+    # instead of ~374px) and wraps the OS name onto a clipped second line.
+    $textRect = New-Object System.Drawing.Rectangle($textX, $e.CellBounds.Y, ($e.CellBounds.Right - $textX - $dotSize - 10), $e.CellBounds.Height)
     $sf = New-Object System.Drawing.StringFormat
     $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+    # One line always: the row was auto-sized for single-line text, so a wrap
+    # would be cut off vertically rather than just running long.
+    $sf.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
     $textBrush = New-Object System.Drawing.SolidBrush($e.CellStyle.ForeColor)
     $e.Graphics.DrawString($e.FormattedValue, $e.CellStyle.Font, $textBrush, $textRect, $sf)
     $textBrush.Dispose()
