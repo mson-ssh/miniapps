@@ -1494,12 +1494,21 @@ function Show-SystemInfo {
     $launched = $false
     if (-not [string]::IsNullOrWhiteSpace($infoExePath)) {
         if (Test-Path -LiteralPath $infoExePath) {
-            Start-Process -FilePath $infoExePath
-            $launched = $true
+            try {
+                Start-Process -FilePath $infoExePath -ErrorAction Stop
+                $launched = $true
+                Write-Host "[OK] Opened $infoExePath" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "[ERROR] Could not open $infoExePath : $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "[WARN] Expected info.exe at $infoExePath but it is not there." -ForegroundColor Yellow
         }
     }
     if (-not $launched) {
-        Write-Host "[WARN] info.exe could not be built - skipping the info window." -ForegroundColor Yellow
+        Write-Host "[WARN] The info window was skipped." -ForegroundColor Yellow
     }
 
     New-DesktopShortcuts -OfficeChoice $OfficeChoice
@@ -1761,7 +1770,26 @@ function Publish-InfoExe {
             ErrorAction = 'Stop'
         }
         if ($useIcon) { $ps2exeArgs['iconFile'] = $iconPath }
-        Invoke-ps2exe @ps2exeArgs | Out-Null
+
+        try {
+            Invoke-ps2exe @ps2exeArgs | Out-Null
+        }
+        catch {
+            # The icon is the only unusual input here, and the compiler
+            # ps2exe drives is picky about .ico layouts. Rather than leave
+            # the machine with no exe at all, build again without one.
+            if (-not $ps2exeArgs.ContainsKey('iconFile')) { throw }
+            Write-Host "[WARN] Build rejected the icon, retrying without it: $($_.Exception.Message)" -ForegroundColor Yellow
+            $ps2exeArgs.Remove('iconFile')
+            Invoke-ps2exe @ps2exeArgs | Out-Null
+        }
+
+        # ps2exe can report success without producing anything usable, and
+        # everything downstream assumes a real file, so confirm it landed.
+        if (-not (Test-Path -LiteralPath $dest) -or (Get-Item -LiteralPath $dest).Length -eq 0) {
+            throw "ps2exe finished but no usable info.exe was produced at $dest"
+        }
+
         Write-Host "[OK] info.exe built and placed on Desktop." -ForegroundColor Green
         return $dest
     }
