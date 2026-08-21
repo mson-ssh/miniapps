@@ -101,15 +101,27 @@ function Get-RamModulesFromSmbios {
 }
 
 # ----------------------------- COLLECT DATA --------------------------------
-# Same CIM queries as Setup.ps1's Get-HardwareInfo, kept in sync by hand -
-# this file has no dependency on Setup.ps1 and does not read it.
+# Standalone - this file has no dependency on Setup.ps1 and does not read it.
 $computer = Get-CimInstance Win32_ComputerSystem
 $bios     = Get-CimInstance Win32_BIOS
+$os       = Get-CimInstance Win32_OperatingSystem
 $cpu      = Get-CimInstance Win32_Processor | Select-Object -First 1
 $disks    = Get-CimInstance Win32_DiskDrive | Where-Object { $_.MediaType -eq 'Fixed hard disk media' }
 $gpus     = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notlike '*Basic*' -and $_.Name -notlike '*Standard*' }
 
 $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+# OS edition + activation status ("Windows 11 Home Single Language" plus a
+# green/orange dot drawn in the grid below). LicenseStatus 1 means the
+# Windows license is activated - the same signal `slmgr /xpr` reports, read
+# via WMI instead of shelling out to slmgr.vbs.
+$osName = $os.Caption -replace '^Microsoft\s+', ''
+$osActivated = $false
+try {
+    $lic = Get-CimInstance -Query "SELECT LicenseStatus FROM SoftwareLicensingProduct WHERE ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL" -ErrorAction Stop
+    $osActivated = @($lic | Where-Object { $_.LicenseStatus -eq 1 }).Count -gt 0
+}
+catch { $osActivated = $false }
 
 # RAM: total + type + speed on one line, then one line per physical stick -
 # "SLOT N: ..." for a real removable module (always shown, even for a
@@ -249,6 +261,7 @@ $rows = @(
     @{ Label = "Hostname";      Value = "$($computer.Name)" }
     @{ Label = "Model";         Value = "$($computer.Model)" }
     @{ Label = "Serial";        Value = "$($bios.SerialNumber)" }
+    @{ Label = "OS";            Value = $osName }
     @{ Label = "CPU";           Value = "$($cpu.Name)" }
     @{ Label = "RAM";           Value = $ramText }
     @{ Label = "Storage";       Value = $storageText }
@@ -302,6 +315,36 @@ $grid.Columns["Value"].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSize
 # re-sort them (the highlighted CPU/RAM/Graphics Card rows would scatter).
 $grid.Columns["Property"].SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable
 $grid.Columns["Value"].SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable
+
+# OS row gets a status dot instead of plain text - green means Windows is
+# activated, orange means it isn't. A DataGridView cell can't mix two colors
+# in one string, so the dot is hand-drawn via CellPainting and the normal
+# text painting is skipped (e.Handled) for just that one cell.
+$osStatusColor = if ($osActivated) { [System.Drawing.Color]::FromArgb(46, 160, 67) } else { [System.Drawing.Color]::FromArgb(230, 126, 34) }
+$grid.Add_CellPainting({
+    param($gridSender, $e)
+    if ($e.RowIndex -lt 0 -or $e.ColumnIndex -ne 1) { return }
+    if ($gridSender.Rows[$e.RowIndex].Cells[0].Value -ne "OS") { return }
+
+    $e.PaintBackground($e.CellBounds, $true)
+    $e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+
+    $dotSize = 10
+    $dotX = $e.CellBounds.X + 6
+    $dotY = $e.CellBounds.Y + [int](($e.CellBounds.Height - $dotSize) / 2)
+    $dotBrush = New-Object System.Drawing.SolidBrush($osStatusColor)
+    $e.Graphics.FillEllipse($dotBrush, $dotX, $dotY, $dotSize, $dotSize)
+    $dotBrush.Dispose()
+
+    $textRect = New-Object System.Drawing.Rectangle(($dotX + $dotSize + 6), $e.CellBounds.Y, ($e.CellBounds.Width - $dotSize - 18), $e.CellBounds.Height)
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $textBrush = New-Object System.Drawing.SolidBrush($e.CellStyle.ForeColor)
+    $e.Graphics.DrawString($e.FormattedValue, $e.CellStyle.Font, $textBrush, $textRect, $sf)
+    $textBrush.Dispose()
+
+    $e.Handled = $true
+})
 
 # Highlight the specs a technician checks first: light blue background +
 # bold value, so CPU/RAM/Graphics Card stand out from the rest of the table.
