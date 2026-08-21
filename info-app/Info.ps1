@@ -326,35 +326,51 @@ $grid.Add_CellPainting({
     if ($e.RowIndex -lt 0 -or $e.ColumnIndex -ne 1) { return }
     if ($gridSender.Rows[$e.RowIndex].Cells[0].Value -ne "OS") { return }
 
-    $e.PaintBackground($e.CellBounds, $true)
-    $e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    # Drawn with TextRenderer, not Graphics.DrawString: DrawString's overloads
+    # take RectangleF/PointF, and PowerShell will not widen an integer
+    # Rectangle to RectangleF - it falls through to the PointF overload and
+    # fails to bind. TextRenderer takes a plain Rectangle, and is also what
+    # DataGridView itself uses, so this cell renders like every other one.
+    try {
+        $text = [string]$e.FormattedValue
+        $font = $e.CellStyle.Font
+        if (-not $font) { return }   # no usable font: let the grid paint it normally
 
-    # Text first, dot right after it - the dot's X position depends on how
-    # wide the OS name renders, so it has to be measured before it can be placed.
-    $textX = $e.CellBounds.X + 6
-    $dotSize = 10
-    # Width measured from the cell's right edge, not from CellBounds.Width:
-    # textX is an absolute coordinate while Width is relative, so subtracting
-    # one from the other loses the whole Property-column offset (~190px
-    # instead of ~374px) and wraps the OS name onto a clipped second line.
-    $textRect = New-Object System.Drawing.Rectangle($textX, $e.CellBounds.Y, ($e.CellBounds.Right - $textX - $dotSize - 10), $e.CellBounds.Height)
-    $sf = New-Object System.Drawing.StringFormat
-    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
-    # One line always: the row was auto-sized for single-line text, so a wrap
-    # would be cut off vertically rather than just running long.
-    $sf.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
-    $textBrush = New-Object System.Drawing.SolidBrush($e.CellStyle.ForeColor)
-    $e.Graphics.DrawString($e.FormattedValue, $e.CellStyle.Font, $textBrush, $textRect, $sf)
-    $textBrush.Dispose()
+        $e.PaintBackground($e.CellBounds, $true)
+        $e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 
-    $textWidth = $e.Graphics.MeasureString($e.FormattedValue, $e.CellStyle.Font).Width
-    $dotX = $textX + [int]$textWidth + 8
-    $dotY = $e.CellBounds.Y + [int](($e.CellBounds.Height - $dotSize) / 2)
-    $dotBrush = New-Object System.Drawing.SolidBrush($osStatusColor)
-    $e.Graphics.FillEllipse($dotBrush, $dotX, $dotY, $dotSize, $dotSize)
-    $dotBrush.Dispose()
+        $dotSize = 10
+        $textX = $e.CellBounds.X + 6
+        # Width measured from the cell's right edge: textX is an absolute
+        # coordinate while CellBounds.Width is relative, so subtracting one
+        # from the other would drop the whole Property-column offset.
+        $textW = $e.CellBounds.Right - $textX - $dotSize - 10
+        if ($textW -lt 1) { $textW = 1 }
 
-    $e.Handled = $true
+        $flags = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
+                 [System.Windows.Forms.TextFormatFlags]::Left -bor
+                 [System.Windows.Forms.TextFormatFlags]::NoPrefix
+        $textRect = New-Object System.Drawing.Rectangle($textX, $e.CellBounds.Y, $textW, $e.CellBounds.Height)
+        [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $text, $font, $textRect, $e.CellStyle.ForeColor, $flags)
+
+        # Dot sits right after the text, so its X depends on the rendered width.
+        $textSize = [System.Windows.Forms.TextRenderer]::MeasureText($e.Graphics, $text, $font)
+        $dotX = $textX + $textSize.Width + 2
+        $dotY = $e.CellBounds.Y + [int](($e.CellBounds.Height - $dotSize) / 2)
+        $dotBrush = New-Object System.Drawing.SolidBrush($osStatusColor)
+        # Rectangle overload, not four loose numbers - an exact type match so
+        # PowerShell never has to guess between the int and float versions.
+        $dotRect = New-Object System.Drawing.Rectangle($dotX, $dotY, $dotSize, $dotSize)
+        $e.Graphics.FillEllipse($dotBrush, $dotRect)
+        $dotBrush.Dispose()
+
+        $e.Handled = $true
+    }
+    catch {
+        # Leave Handled false so the grid draws the row its normal way. Losing
+        # the dot is acceptable; a stack of error dialogs on the customer's
+        # screen is not - and this runs on every repaint, so it would repeat.
+    }
 })
 
 # Highlight the specs a technician checks first: light blue background +
