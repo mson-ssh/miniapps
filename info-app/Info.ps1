@@ -258,10 +258,10 @@ $gpuText = $gpuLines -join "`r`n"
 if (-not $gpuText) { $gpuText = "N/A" }
 
 $rows = @(
+    @{ Label = "OS";            Value = $osName }
     @{ Label = "Hostname";      Value = "$($computer.Name)" }
     @{ Label = "Model";         Value = "$($computer.Model)" }
     @{ Label = "Serial";        Value = "$($bios.SerialNumber)" }
-    @{ Label = "OS";            Value = $osName }
     @{ Label = "CPU";           Value = "$($cpu.Name)" }
     @{ Label = "RAM";           Value = $ramText }
     @{ Label = "Storage";       Value = $storageText }
@@ -291,7 +291,9 @@ $grid.AllowUserToResizeColumns = $false
 $grid.RowHeadersVisible = $false
 $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
 $grid.BackgroundColor = [System.Drawing.Color]::FromArgb(240, 240, 242)
-$grid.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+# FixedSingle, not None: without it the table has lines between cells but no
+# outer edge, so the top/left/right of the grid just bleed into the form.
+$grid.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $grid.CellBorderStyle = [System.Windows.Forms.DataGridViewCellBorderStyle]::Single
 $grid.GridColor = [System.Drawing.Color]::FromArgb(210, 210, 212)
 $grid.EnableHeadersVisualStyles = $false
@@ -302,9 +304,15 @@ $grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe
 # Cell background just off pure white - the stark white/black contrast is
 # what read as too bright, not the color count.
 $grid.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 251)
+$grid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 34)
 $grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12)
 $grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(4)
 $grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
+# Selection painted the same as a normal cell. This is a read-only report, so
+# selection carries no meaning - and the default blue block covers the grid
+# lines inside whichever row happens to be selected (row 0 always is, on open).
+$grid.DefaultCellStyle.SelectionBackColor = $grid.DefaultCellStyle.BackColor
+$grid.DefaultCellStyle.SelectionForeColor = $grid.DefaultCellStyle.ForeColor
 
 [void]$grid.Columns.Add("Property", "Property")
 [void]$grid.Columns.Add("Value", "Value")
@@ -383,9 +391,33 @@ foreach ($row in $rows) {
     $rowIndex = $grid.Rows.Add($row.Label, $row.Value)
     if ($highlightLabels -contains $row.Label) {
         $grid.Rows[$rowIndex].DefaultCellStyle.BackColor = $highlightBackColor
+        # Same colour when selected, matching the rule set on DefaultCellStyle -
+        # a row-level BackColor does not carry over to SelectionBackColor.
+        $grid.Rows[$rowIndex].DefaultCellStyle.SelectionBackColor = $highlightBackColor
+        $grid.Rows[$rowIndex].DefaultCellStyle.SelectionForeColor = $grid.DefaultCellStyle.ForeColor
         $grid.Rows[$rowIndex].Cells[1].Style.Font = $highlightValueFont
     }
 }
+
+# Grow the window to fit the whole table so nothing needs scrolling. Row
+# heights are only computed once the grid has a window handle, so this has to
+# wait for Load rather than run right after the rows are added. Falls back to
+# leaving the scrollbar alone if the table is taller than the screen.
+$form.Add_Load({
+    $grid.AutoResizeRows([System.Windows.Forms.DataGridViewAutoSizeRowsMode]::AllCells)
+
+    $needed = $grid.ColumnHeadersHeight + 2   # +2 for the grid's own border
+    foreach ($r in $grid.Rows) { $needed += $r.Height }
+
+    $maxHeight = [int]([System.Windows.Forms.Screen]::FromControl($form).WorkingArea.Height * 0.92)
+    if ($needed -le $maxHeight) {
+        $grid.ScrollBars = [System.Windows.Forms.ScrollBars]::None
+        $form.ClientSize = New-Object System.Drawing.Size($form.ClientSize.Width, $needed)
+        # StartPosition centred the form at its original height, so re-centre
+        # it now that the height has changed.
+        $form.CenterToScreen()
+    }
+})
 
 $form.Controls.Add($grid)
 [void]$form.ShowDialog()
