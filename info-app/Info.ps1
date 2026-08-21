@@ -112,11 +112,12 @@ $gpus     = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notl
 $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 # RAM: total + type + speed on one line, then one line per physical stick -
-# "Slot N: ..." for a real removable module, "Onboard N: ..." when the
-# SMBIOS form factor says it's soldered. Prefers the accurate raw-SMBIOS
-# parse; falls back to Win32_PhysicalMemory (can't tell "Row of chips"
-# apart from a normal module, so everything reads as "Slot N" there) only
-# if the raw table couldn't be read at all.
+# "SLOT N: ..." for a real removable module (always shown, even for a
+# single stick), "ONBOARD N: ..." when the SMBIOS form factor says it's
+# soldered. Prefers the accurate raw-SMBIOS parse; falls back to
+# Win32_PhysicalMemory (can't tell "Row of chips" apart from a normal
+# module, so everything reads as "SLOT N" there) only if the raw table
+# couldn't be read at all.
 $ramLines = [System.Collections.Generic.List[string]]::new()
 $smbiosModules = Get-RamModulesFromSmbios
 
@@ -144,8 +145,10 @@ if ($smbiosModules) {
         $capGB = [math]::Round($mod.CapacityBytes / 1GB, 0)
         $mfr = if ($mod.Manufacturer) { $mod.Manufacturer } else { "Unknown" }
         $speed = if ($mod.Speed) { "$($mod.Speed)MHz" } else { "N/A" }
-        $label = if ($mod.Soldered) { "Onboard $($i + 1)" } else { "Slot $($i + 1)" }
-        $ramLines.Add("${label}: $mfr, ${capGB}GB, $speed")
+        $type = if ($memTypeMap.ContainsKey($mod.TypeCode)) { $memTypeMap[$mod.TypeCode] } else { "" }
+        $label = if ($mod.Soldered) { "ONBOARD" } else { "SLOT" }
+        $detail = (("${capGB}GB $type $speed").Trim() -replace '\s{2,}', ' ')
+        $ramLines.Add("$label $($i + 1): $detail - $mfr")
     }
 }
 else {
@@ -167,7 +170,9 @@ else {
         $capGB = [math]::Round($mem.Capacity / 1GB, 0)
         $mfr = if ($mem.Manufacturer) { $mem.Manufacturer.Trim() } else { "Unknown" }
         $speed = if ($mem.Speed) { "$($mem.Speed)MHz" } else { "N/A" }
-        $ramLines.Add("Slot $($i + 1): $mfr, ${capGB}GB, $speed")
+        $type = if ($mem.SMBIOSMemoryType -and $memTypeMap.ContainsKey([int]$mem.SMBIOSMemoryType)) { $memTypeMap[[int]$mem.SMBIOSMemoryType] } else { "" }
+        $detail = (("${capGB}GB $type $speed").Trim() -replace '\s{2,}', ' ')
+        $ramLines.Add("SLOT $($i + 1): $detail - $mfr")
     }
 }
 $ramText = $ramLines -join "`r`n"
@@ -290,6 +295,10 @@ $grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::T
 $grid.Columns["Property"].Width = 180
 $grid.Columns["Property"].DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
 $grid.Columns["Value"].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
+# Rows stay in the fixed order they were added - clicking a header must not
+# re-sort them (the highlighted CPU/RAM/Graphics Card rows would scatter).
+$grid.Columns["Property"].SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable
+$grid.Columns["Value"].SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable
 
 # Highlight the specs a technician checks first: light blue background +
 # bold value, so CPU/RAM/Graphics Card stand out from the rest of the table.
