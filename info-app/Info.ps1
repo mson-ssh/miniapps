@@ -329,19 +329,23 @@ $grid.Add_CellPainting({
     $e.PaintBackground($e.CellBounds, $true)
     $e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 
+    # Text first, dot right after it - the dot's X position depends on how
+    # wide the OS name renders, so it has to be measured before it can be placed.
+    $textX = $e.CellBounds.X + 6
     $dotSize = 10
-    $dotX = $e.CellBounds.X + 6
-    $dotY = $e.CellBounds.Y + [int](($e.CellBounds.Height - $dotSize) / 2)
-    $dotBrush = New-Object System.Drawing.SolidBrush($osStatusColor)
-    $e.Graphics.FillEllipse($dotBrush, $dotX, $dotY, $dotSize, $dotSize)
-    $dotBrush.Dispose()
-
-    $textRect = New-Object System.Drawing.Rectangle(($dotX + $dotSize + 6), $e.CellBounds.Y, ($e.CellBounds.Width - $dotSize - 18), $e.CellBounds.Height)
+    $textRect = New-Object System.Drawing.Rectangle($textX, $e.CellBounds.Y, ($e.CellBounds.Width - $textX - $dotSize - 14), $e.CellBounds.Height)
     $sf = New-Object System.Drawing.StringFormat
     $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
     $textBrush = New-Object System.Drawing.SolidBrush($e.CellStyle.ForeColor)
     $e.Graphics.DrawString($e.FormattedValue, $e.CellStyle.Font, $textBrush, $textRect, $sf)
     $textBrush.Dispose()
+
+    $textWidth = $e.Graphics.MeasureString($e.FormattedValue, $e.CellStyle.Font).Width
+    $dotX = $textX + [int]$textWidth + 8
+    $dotY = $e.CellBounds.Y + [int](($e.CellBounds.Height - $dotSize) / 2)
+    $dotBrush = New-Object System.Drawing.SolidBrush($osStatusColor)
+    $e.Graphics.FillEllipse($dotBrush, $dotX, $dotY, $dotSize, $dotSize)
+    $dotBrush.Dispose()
 
     $e.Handled = $true
 })
