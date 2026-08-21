@@ -409,13 +409,17 @@ $form.Add_Load({
     $needed = $grid.ColumnHeadersHeight + 2   # +2 for the grid's own border
     foreach ($r in $grid.Rows) { $needed += $r.Height }
 
-    $maxHeight = [int]([System.Windows.Forms.Screen]::FromControl($form).WorkingArea.Height * 0.92)
-    if ($needed -le $maxHeight) {
+    $work = [System.Windows.Forms.Screen]::FromControl($form).WorkingArea
+    if ($needed -le [int]($work.Height * 0.92)) {
         $grid.ScrollBars = [System.Windows.Forms.ScrollBars]::None
         $form.ClientSize = New-Object System.Drawing.Size($form.ClientSize.Width, $needed)
-        # StartPosition centred the form at its original height, so re-centre
-        # it now that the height has changed.
-        $form.CenterToScreen()
+        # StartPosition centred the form at its original height, so it has to
+        # be re-centred now the height has changed. Done by hand because
+        # Form.CenterToScreen is protected - not callable from out here.
+        $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+        $form.Location = New-Object System.Drawing.Point(
+            ($work.X + [int](($work.Width - $form.Width) / 2)),
+            ($work.Y + [int](($work.Height - $form.Height) / 2)))
     }
 })
 
