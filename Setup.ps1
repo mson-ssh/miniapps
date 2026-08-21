@@ -1660,7 +1660,11 @@ function Publish-InfoExe {
         Invoke-WebRequest -Uri $InfoSourceUrl -OutFile $sourcePs1 -UseBasicParsing -ErrorAction Stop
         New-InfoIcon -Path $iconPath
 
-        Invoke-ps2exe -inputFile $sourcePs1 -outputFile $dest -noConsole -iconFile $iconPath -title "System Information" -ErrorAction Stop
+        # Piped to Out-Null: Invoke-ps2exe writes its own compile-log lines to
+        # the success stream, which would otherwise land in this function's
+        # return value alongside $dest below, turning a clean path string
+        # into a mixed array (and breaking Test-Path/Start-Process downstream).
+        Invoke-ps2exe -inputFile $sourcePs1 -outputFile $dest -noConsole -iconFile $iconPath -title "System Information" -ErrorAction Stop | Out-Null
         Write-Host "[OK] info.exe built and placed on Desktop." -ForegroundColor Green
         return $dest
     }
