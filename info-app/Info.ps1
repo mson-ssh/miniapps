@@ -265,7 +265,7 @@ $form.Size = New-Object System.Drawing.Size(600, 560)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
-$form.BackColor = [System.Drawing.Color]::White
+$form.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 242)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 12)
 
 $grid = New-Object System.Windows.Forms.DataGridView
@@ -277,15 +277,18 @@ $grid.AllowUserToResizeRows = $false
 $grid.AllowUserToResizeColumns = $false
 $grid.RowHeadersVisible = $false
 $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
-$grid.BackgroundColor = [System.Drawing.Color]::White
+$grid.BackgroundColor = [System.Drawing.Color]::FromArgb(240, 240, 242)
 $grid.BorderStyle = [System.Windows.Forms.BorderStyle]::None
 $grid.CellBorderStyle = [System.Windows.Forms.DataGridViewCellBorderStyle]::Single
-$grid.GridColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+$grid.GridColor = [System.Drawing.Color]::FromArgb(210, 210, 212)
 $grid.EnableHeadersVisualStyles = $false
 $grid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::AutoSize
 $grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::AllCells
-$grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
+$grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(228, 228, 231)
 $grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+# Cell background just off pure white - the stark white/black contrast is
+# what read as too bright, not the color count.
+$grid.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 251)
 $grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 12)
 $grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(4)
 $grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
