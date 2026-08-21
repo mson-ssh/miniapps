@@ -131,9 +131,14 @@ catch { $osActivated = $false }
 # module, so everything reads as "SLOT N" there) only if the raw table
 # couldn't be read at all.
 $ramLines = [System.Collections.Generic.List[string]]::new()
-$smbiosModules = Get-RamModulesFromSmbios
+# Forced into an array. Get-RamModulesFromSmbios returns a List, and
+# PowerShell unrolls a collection on the way out of a function - so a machine
+# with a single stick got back one bare object, whose .Count is not a reliable
+# 1, and the per-slot loop below silently ran zero times. Two sticks worked,
+# one did not.
+$smbiosModules = @(Get-RamModulesFromSmbios | Where-Object { $_ })
 
-if ($smbiosModules) {
+if ($smbiosModules.Count -gt 0) {
     # One summary line per kind present, not one combined line - a hybrid
     # machine (some onboard + a SODIMM slot) has two different capacities
     # and possibly two different speeds, so lumping them together would
