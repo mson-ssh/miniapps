@@ -2117,6 +2117,11 @@ function Start-FeatureWindow {
         )
         # -File with the path quoted: %TEMP% lives under the user profile, and a
         # username with a space in it would otherwise split into two arguments.
+        #
+        # No -NoExit, and nothing is transcribed: the window closes on its own
+        # and leaves the customer's Desktop clean. To watch a run that is
+        # misbehaving, add -NoExit here and the window stays open on whatever it
+        # last printed.
         $proc = Start-Process powershell -PassThru -ErrorAction Stop `
             -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$boot`""
         $Script:FeatureWindows[$Action] = $proc
@@ -2134,28 +2139,17 @@ function Start-FeatureWindow {
 # Set by the bootstrap Start-FeatureWindow writes. When it is present this
 # process is a feature window, not the menu: run the one feature and close.
 if ($MiniAppAction) {
-    # The window closes the moment the feature returns, so whatever it printed
-    # would be gone before it could be read. The transcript is what keeps it.
-    # Per-action filename because several windows can be writing at once.
-    $logPath = Join-Path ([Environment]::GetFolderPath('Desktop')) "MiniApp-$MiniAppAction-log.txt"
-    $logging = $false
-    try {
-        Start-Transcript -Path $logPath -Force -ErrorAction Stop | Out-Null
-        $logging = $true
-    }
-    catch { }
-
-    try {
-        switch ($MiniAppAction) {
-            'Optimize' { Invoke-OptimizeInstall }
-            'Install'  { Install-NecessaryApps -Method 'Installer' }
-            'Info'     { Show-SystemInfo }
-            'Debloat'  { Invoke-Debloatware }
-            default    { Write-Host "[ERROR] Unknown action '$MiniAppAction'." -ForegroundColor Red }
-        }
-    }
-    finally {
-        if ($logging) { try { Stop-Transcript | Out-Null } catch { } }
+    # Nothing is written to disk here: the Desktop these windows run against is
+    # the one handed to the customer, and a machine that leaves the shop should
+    # carry the tool's output no more than it carries its installers. The window
+    # closing takes what it printed with it - see the note in Start-FeatureWindow
+    # for how to watch a run that needs watching.
+    switch ($MiniAppAction) {
+        'Optimize' { Invoke-OptimizeInstall }
+        'Install'  { Install-NecessaryApps -Method 'Installer' }
+        'Info'     { Show-SystemInfo }
+        'Debloat'  { Invoke-Debloatware }
+        default    { Write-Host "[ERROR] Unknown action '$MiniAppAction'." -ForegroundColor Red }
     }
     exit
 }
