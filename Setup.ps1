@@ -872,6 +872,97 @@ function Set-CursorTop {
     if ($Script:CanReposition) { try { [Console]::SetCursorPosition(0, $Top) } catch { } }
 }
 
+# Staff-only sign on the way into the menu, not a lock. The value sits in
+# plaintext in a file anyone can fetch from the raw GitHub URL, so it turns away
+# someone who opened the wrong window - not someone who went looking. Kept plain
+# for exactly that reason: hashing a secret that is readable two lines above
+# would only make it look like something it is not.
+$Script:AccessPassword   = '@z'
+$Script:MaxPasswordTries = 3
+
+function Read-MaskedLine {
+    # Read-Host echoes what is typed, and -AsSecureString has to be marshalled
+    # straight back to plaintext to compare against the value above - ceremony
+    # with nothing behind it. So keys are taken one at a time and echoed as
+    # asterisks. Backspace rubs out a character; Esc clears the line.
+    $sb = New-Object System.Text.StringBuilder
+    while ($true) {
+        $key = [System.Console]::ReadKey($true)
+        switch ($key.Key) {
+            'Enter' {
+                Write-Host ""
+                return $sb.ToString()
+            }
+            'Backspace' {
+                if ($sb.Length -gt 0) {
+                    [void]$sb.Remove($sb.Length - 1, 1)
+                    # Back up over the asterisk, paint a space on it, back up again.
+                    Write-Host "`b `b" -NoNewline
+                }
+            }
+            'Escape' {
+                while ($sb.Length -gt 0) {
+                    [void]$sb.Remove($sb.Length - 1, 1)
+                    Write-Host "`b `b" -NoNewline
+                }
+            }
+            default {
+                # Arrows, F-keys and modifiers land here too, carrying KeyChar 0 -
+                # only what would print is taken.
+                if ([int]$key.KeyChar -ge 32) {
+                    [void]$sb.Append($key.KeyChar)
+                    Write-Host "*" -NoNewline
+                }
+            }
+        }
+    }
+}
+
+function Assert-AccessPassword {
+    # Asked once, on the way into the menu. Feature windows re-run this file with
+    # $MiniAppAction set and return before this point, so a technician is asked
+    # once per session and not once per window.
+    #
+    # Three wrong answers close PowerShell.
+
+    # ReadKey throws rather than prompts when there is no console to read from,
+    # so a piped or redirected session is let through instead of crashing on the
+    # doorstep. Nothing is protected by failing here that is not already readable
+    # in the file itself.
+    $canPrompt = $true
+    try { $canPrompt = -not [Console]::IsInputRedirected } catch { }
+    if (-not $canPrompt) { return }
+
+    for ($try = 1; $try -le $Script:MaxPasswordTries; $try++) {
+        Clear-Host
+        Write-BoxTop
+        Write-BoxCenter "MINIAPP  -  Windows Setup Tool" "White"
+        Write-BoxSep
+        Write-BoxLine "  Internal tool - authorised technicians only." "White"
+        Write-BoxLine "  Please enter the password to continue." "Yellow"
+        if ($try -gt 1) {
+            $left = $Script:MaxPasswordTries - $try + 1
+            Write-BoxSep
+            Write-BoxLine ("  Wrong password. {0} attempt(s) left." -f $left) "Red"
+        }
+        Write-BoxBottom
+        Write-Host ""
+        Write-Host "  Password: " -NoNewline -ForegroundColor Cyan
+
+        # Case-sensitive on purpose: -eq would let "@Z" through.
+        if ((Read-MaskedLine) -ceq $Script:AccessPassword) {
+            Clear-Host
+            return
+        }
+    }
+
+    Clear-Host
+    Write-Host "Too many failed attempts. Closing PowerShell." -ForegroundColor Red
+    # Long enough to read before the window goes.
+    Start-Sleep -Seconds 2
+    exit
+}
+
 function Read-OfficeChoice {
     # Office 2024 is only allowed on licensed machines; everything else gets
     # WPS Office. Asked once, before a single byte is downloaded.
@@ -2307,6 +2398,10 @@ if ($MiniAppAction) {
     }
     exit
 }
+
+# Below this line is the menu session. The gate sits here rather than at the top
+# of the file so the feature windows above return before reaching it.
+Assert-AccessPassword
 
 while ($true) {
     $choice = Read-MenuChoice
