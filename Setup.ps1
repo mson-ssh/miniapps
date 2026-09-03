@@ -1835,6 +1835,39 @@ $MenuOptions = @(
     @{ Label = "Exit";                     Desc = "Close the tool";                                   Action = ""         }
 )
 
+function Get-NominalDiskSize {
+    # Rounds a raw byte count to the size printed on the box: a "512GB" SSD
+    # reports 476GB in binary GiB, and a technician reading 476 off the header
+    # would write down the wrong drive. Same table and rounding as Info.ps1 -
+    # the two are kept in step by hand.
+    param([double]$Bytes)
+    $decimalGB = $Bytes / 1000000000
+    $standardSizesGB = @(32, 60, 64, 90, 120, 125, 128, 160, 180, 200, 240, 250, 256, 320, 400, 480, 500, 512, 640, 750, 960, 1000, 1024, 1500, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 16000, 20000)
+    $closest = $standardSizesGB | Sort-Object { [Math]::Abs($_ - $decimalGB) } | Select-Object -First 1
+    if ($closest -ge 1000) { return "$([math]::Round($closest / 1000, 1))TB" }
+    return "${closest}GB"
+}
+
+function Get-ShortCpuName {
+    # "13th Gen Intel(R) Core(TM) i5-1335U" -> "i5 1335U". The vendor and brand
+    # words are the same on every machine that comes through, so they buy
+    # nothing at this width; the model number is the whole of what is worth
+    # showing. Also handles "Core Ultra 7 155H", "Ryzen 7 5800H with Radeon
+    # Graphics" and "Celeron N4020 CPU @ 1.10GHz".
+    param([string]$Name)
+
+    $n = $Name -replace '\((R|TM|tm)\)', ''
+    $n = $n -replace '\d+th Gen ', ''
+    $n = $n -replace '\s+(CPU|Processor)\b.*$', ''
+    # Some names carry the clock with no "CPU" in front of it to anchor the
+    # rule above - "Pentium(R) Silver N6000 @ 1.10GHz" - so the frequency is
+    # cut on its own too.
+    $n = $n -replace '\s*@\s*[\d.]+\s*[GM]Hz.*$', ''
+    $n = $n -replace '\s+with\s+.*$', ''
+    $n = $n -replace '\b(Intel|AMD|Core)\b', ''
+    return (($n -replace '-', ' ') -replace '\s+', ' ').Trim()
+}
+
 function Get-MenuContext {
     # Machine identity shown in the header - the fields a technician writes down
     # off the screen. Every lookup is best-effort and falls back to "-": a header
@@ -1854,6 +1887,34 @@ function Get-MenuContext {
     } catch { $null }
     if ($winVer -ne "-" -and $release) { $winVer = "$winVer $release" }
 
+    # The headline spec, on one line. Each part is read on its own so that one
+    # unreadable piece leaves the other two standing rather than blanking the
+    # whole field.
+    $cpuText = try { Get-ShortCpuName (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Name } catch { "" }
+
+    $ramText = try {
+        # Summed from the modules rather than TotalPhysicalMemory, which is
+        # short by whatever the firmware reserved and rounds down to 15GB on a
+        # 16GB machine.
+        $bytes = (Get-CimInstance Win32_PhysicalMemory -ErrorAction Stop | Measure-Object -Property Capacity -Sum).Sum
+        "$([math]::Round($bytes / 1GB))GB"
+    } catch { "" }
+
+    $diskText = try {
+        # The disk holding C:, not disk 0 - they are usually the same, but on a
+        # machine with a second drive fitted they need not be.
+        $sysDisk = Get-Partition -DriveLetter C -ErrorAction Stop | Get-Disk -ErrorAction Stop
+        # MediaType is the only place SSD/HDD is stated; when it is Unspecified
+        # or the cmdlet is missing, the neutral "Disk" is better than guessing.
+        $kind = "Disk"
+        $pd = Get-PhysicalDisk -ErrorAction SilentlyContinue |
+              Where-Object { $_.DeviceId -eq [string]$sysDisk.Number } | Select-Object -First 1
+        if ($pd -and "$($pd.MediaType)" -in @("SSD", "HDD")) { $kind = "$($pd.MediaType)" }
+        "$kind $(Get-NominalDiskSize -Bytes $sysDisk.Size)"
+    } catch { "" }
+
+    $info = (@($cpuText, $ramText, $diskText) | Where-Object { $_ }) -join " / "
+
     # When the repo was last pushed, so a technician can see at a glance whether
     # this machine pulled a current Setup.ps1. Best-effort and time-boxed: a slow
     # or rate-limited GitHub must never hold the menu hostage.
@@ -1870,7 +1931,8 @@ function Get-MenuContext {
         $stamp.ToLocalTime().ToString('yyyy-MM-dd HH:mm')
     } catch { "unknown" }
 
-    return @{ Host = $env:COMPUTERNAME; Model = $model; Serial = $serial; Windows = $winVer; Updated = $updated }
+    return @{ Host = $env:COMPUTERNAME; Model = $model; Serial = $serial; Windows = $winVer
+              Info = $info; Updated = $updated }
 }
 
 function Show-Menu {
@@ -1893,14 +1955,18 @@ function Show-Menu {
     # of a tight line saying it twice.
     $lw = 8
     $rw = 8
-    $cell = [int](($Script:UiWidth - 2 - 2 - $lw - $rw) / 2)
-    Write-BoxLine ("  " + (Format-HeaderCell "Host"  $Ctx.Host  $lw $cell) +
-                          (Format-HeaderCell "OS"     $Ctx.Windows $rw $cell)) "DarkGray"
-    Write-BoxLine ("  " + (Format-HeaderCell "Model" $Ctx.Model $lw $cell) +
-                          (Format-HeaderCell "Serial" $Ctx.Serial  $rw $cell)) "DarkGray"
-    # Update has the line to itself, so it gets both cells and the label the
-    # second column would have used.
-    Write-BoxLine ("  " + (Format-HeaderCell "Update" $Ctx.Updated $lw (($cell * 2) + $rw))) "DarkGray"
+    # The split is not even. What goes on the left runs long - a model name and
+    # a full spec line - while the right holds an OS caption, a serial and a
+    # fixed-width timestamp, so the left column is given the extra columns.
+    # 2 + 8 + 32 + 8 + 24 fills the 74-column interior exactly.
+    $lc = 32
+    $rc = 24
+    Write-BoxLine ("  " + (Format-HeaderCell "Host"  $Ctx.Host  $lw $lc) +
+                          (Format-HeaderCell "OS"     $Ctx.Windows $rw $rc)) "DarkGray"
+    Write-BoxLine ("  " + (Format-HeaderCell "Model" $Ctx.Model $lw $lc) +
+                          (Format-HeaderCell "Serial" $Ctx.Serial  $rw $rc)) "DarkGray"
+    Write-BoxLine ("  " + (Format-HeaderCell "Info"  $Ctx.Info  $lw $lc) +
+                          (Format-HeaderCell "Update" $Ctx.Updated $rw $rc)) "DarkGray"
     Write-BoxBottom
     Write-Host ""
 
