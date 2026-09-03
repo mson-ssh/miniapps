@@ -1807,12 +1807,15 @@ function Publish-InfoExe {
 # =========================================================================
 # INTERACTIVE MENU UI
 # =========================================================================
+# Action names the feature window Start-FeatureWindow opens, and is what the
+# dispatch at the bottom of this file matches on. Exit has none - it is the only
+# item still handled inside the menu process itself.
 $MenuOptions = @(
-    @{ Label = "Optimize Install";          Desc = "Install + Debloat together, then hardware report" },
-    @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel" },
-    @{ Label = "System Information";        Desc = "Hardware info in a GUI window + build info.exe" },
-    @{ Label = "Debloat Windows";           Desc = "Remove bloatware (Win11Debloat defaults)" },
-    @{ Label = "Exit";                      Desc = "Close the tool" }
+    @{ Label = "Optimize Install";         Desc = "Install + Debloat together, then hardware report"; Action = "Optimize" },
+    @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel";  Action = "Install"  },
+    @{ Label = "System Information";       Desc = "Hardware info in a GUI window + build info.exe";   Action = "Info"     },
+    @{ Label = "Debloat Windows";          Desc = "Remove bloatware (Win11Debloat defaults)";         Action = "Debloat"  },
+    @{ Label = "Exit";                     Desc = "Close the tool";                                   Action = ""         }
 )
 
 function Get-MenuContext {
@@ -1864,22 +1867,37 @@ function Show-Menu {
 
     for ($i = 0; $i -lt $MenuOptions.Count; $i++) {
         $num = $i + 1
+        # Asked on every redraw rather than cached: an item frees up the moment
+        # its window closes, and the next keypress repaints and shows that.
+        # Padding fits the longest label plus a suffix (both are 10 wide), so
+        # the highlight bar keeps one width in every state.
+        $blocker = Get-BlockingWindow $MenuOptions[$i].Action
+        $busy = ""
+        if ($blocker) {
+            $busy = if ($blocker -eq $MenuOptions[$i].Action) { " [running]" } else { " [blocked]" }
+        }
         if ($i -eq $SelectedIndex) {
-            Write-Host ("  {0} {1}. {2}" -f $Script:Glyph.Run, $num, $MenuOptions[$i].Label.PadRight(28)) -ForegroundColor Black -BackgroundColor Cyan
+            Write-Host ("  {0} {1}. {2}" -f $Script:Glyph.Run, $num, ($MenuOptions[$i].Label + $busy).PadRight(34)) -ForegroundColor Black -BackgroundColor Cyan
             Write-Host ("       {0}" -f $MenuOptions[$i].Desc) -ForegroundColor DarkGray
         }
         else {
-            Write-Host ("    {0}. {1}" -f $num, $MenuOptions[$i].Label) -ForegroundColor White
+            $color = if ($busy) { "DarkGray" } else { "White" }
+            Write-Host ("    {0}. {1}{2}" -f $num, $MenuOptions[$i].Label, $busy) -ForegroundColor $color
         }
     }
     Write-Host ""
     Write-Host "  Up/Down + Enter, a number key, or A/S/I/D/Q to run directly." -ForegroundColor DarkGray
+    Write-Host "  Each item opens its own window - this menu stays usable." -ForegroundColor DarkGray
 }
 
 function Read-MenuChoice {
     $selectedIndex = 0
     $count = $MenuOptions.Count
-    $ctx = Get-MenuContext
+    # Cached for the session. Launching a feature now returns here instantly, so
+    # re-running Get-MenuContext - a network call with a 5s timeout - on every
+    # pass would put a visible stall between one launch and the next.
+    if (-not $Script:MenuCtx) { $Script:MenuCtx = Get-MenuContext }
+    $ctx = $Script:MenuCtx
 
     while ($true) {
         Show-Menu -SelectedIndex $selectedIndex -Ctx $ctx
@@ -1912,29 +1930,164 @@ function Read-MenuChoice {
 }
 
 # =========================================================================
-# MAIN LOOP
-while ($true) {
-    $choice = Read-MenuChoice
-    Clear-Host
+# FEATURE WINDOWS
+# =========================================================================
+# A menu item no longer takes over this console. It opens its own PowerShell
+# window and returns immediately, so the menu stays on screen and usable while
+# the feature runs - and several features can be watched side by side.
+$Script:FeatureWindows = @{}
 
-    switch ($choice) {
-        0 { Invoke-OptimizeInstall }
-        1 { Install-NecessaryApps -Method 'Installer' }
-        2 {
-            # info.exe runs detached, not a blocking dialog - there is
-            # nothing to wait on here, so skip the "press any key" pause
-            # and go straight back to the menu.
-            Show-SystemInfo
-            continue
-        }
-        3 { Invoke-Debloatware }
-        4 {
-            Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
-            exit
+function Get-FeatureWindow {
+    # The still-open window for an action, or $null. Closed windows are dropped
+    # here rather than swept separately, so an item becomes selectable again on
+    # the first redraw after its window goes away.
+    param([string]$Action)
+
+    if ([string]::IsNullOrEmpty($Action)) { return $null }
+    $proc = $Script:FeatureWindows[$Action]
+    if (-not $proc) { return $null }
+
+    # A Process object outlives the process it describes, and HasExited can
+    # throw once the handle is gone. A window that cannot be read is treated as
+    # closed: worst case the item is offered again, which beats a menu item
+    # locked out for the rest of the session.
+    $exited = $true
+    try { $exited = $proc.HasExited } catch { }
+    if ($exited) {
+        $Script:FeatureWindows.Remove($Action)
+        return $null
+    }
+    return $proc
+}
+
+# Actions that must never be open at the same time, keyed action -> group name.
+# Same shape as $SerialGroups up in the install engine, and the same reasoning:
+# Optimize Install drives that very engine, so running it beside Install Apps
+# means two engines downloading into one %TEMP% folder and two passes
+# repartitioning C:. Another pair just needs two more lines here.
+$ExclusiveGroups = @{
+    "Optimize" = "install"
+    "Install"  = "install"
+}
+
+function Get-BlockingWindow {
+    # The name of the open action standing in the way of $Action - itself when
+    # it is already running, otherwise whichever member of its exclusive group
+    # is. $null when the item is free to start.
+    param([string]$Action)
+
+    if ([string]::IsNullOrEmpty($Action)) { return $null }
+    if (Get-FeatureWindow $Action) { return $Action }
+
+    $group = $ExclusiveGroups[$Action]
+    if (-not $group) { return $null }
+    foreach ($other in $ExclusiveGroups.Keys) {
+        if ($other -eq $Action) { continue }
+        if ($ExclusiveGroups[$other] -ne $group) { continue }
+        if (Get-FeatureWindow $other) { return $other }
+    }
+    return $null
+}
+
+function Start-FeatureWindow {
+    param([Parameter(Mandatory)][string]$Action)
+
+    # The child cannot simply be handed this script: run through `irm | iex`
+    # there is no file behind it and $PSCommandPath is empty - the same reason
+    # the elevation block up top re-fetches instead of relaunching itself. So a
+    # two-line bootstrap is written out that sets $MiniAppAction and re-fetches;
+    # iex runs in that scope, so the dispatch below sees the variable and runs
+    # that one feature instead of drawing a menu.
+    #
+    # Started from this process, which is already elevated, so the child
+    # inherits Administrator - no second UAC prompt per window.
+    $workDir = "$env:TEMP\MiniApp"
+    if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Force | Out-Null }
+    $boot = "$workDir\run-$Action.ps1"
+
+    try {
+        Set-Content -LiteralPath $boot -Encoding UTF8 -Force -ErrorAction Stop -Value @(
+            "`$MiniAppAction = '$Action'"
+            "iex (irm '$SelfUrl')"
+        )
+        # -File with the path quoted: %TEMP% lives under the user profile, and a
+        # username with a space in it would otherwise split into two arguments.
+        $proc = Start-Process powershell -PassThru -ErrorAction Stop `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$boot`""
+        $Script:FeatureWindows[$Action] = $proc
+        return $true
+    }
+    catch {
+        Write-Host "`n  [ERROR] Could not open a window for $Action - $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# =========================================================================
+# MAIN LOOP
+# =========================================================================
+# Set by the bootstrap Start-FeatureWindow writes. When it is present this
+# process is a feature window, not the menu: run the one feature and close.
+if ($MiniAppAction) {
+    # The window closes the moment the feature returns, so whatever it printed
+    # would be gone before it could be read. The transcript is what keeps it.
+    # Per-action filename because several windows can be writing at once.
+    $logPath = Join-Path ([Environment]::GetFolderPath('Desktop')) "MiniApp-$MiniAppAction-log.txt"
+    $logging = $false
+    try {
+        Start-Transcript -Path $logPath -Force -ErrorAction Stop | Out-Null
+        $logging = $true
+    }
+    catch { }
+
+    try {
+        switch ($MiniAppAction) {
+            'Optimize' { Invoke-OptimizeInstall }
+            'Install'  { Install-NecessaryApps -Method 'Installer' }
+            'Info'     { Show-SystemInfo }
+            'Debloat'  { Invoke-Debloatware }
+            default    { Write-Host "[ERROR] Unknown action '$MiniAppAction'." -ForegroundColor Red }
         }
     }
+    finally {
+        if ($logging) { try { Stop-Transcript | Out-Null } catch { } }
+    }
+    exit
+}
 
-    Write-Host "`nPress any key to return to the Menu..." -ForegroundColor Gray
-    [System.Console]::ReadKey($true) | Out-Null
+while ($true) {
+    $choice = Read-MenuChoice
+    $option = $MenuOptions[$choice]
+
+    # Exit is the one item with no Action - nothing to open, just stop here.
+    if (-not $option.Action) {
+        Clear-Host
+        Write-Host "Exiting program. Have a great day!" -ForegroundColor Green
+        exit
+    }
+
+    # Refused rather than queued: the window holding the item is still open and
+    # can be watched, so there is something to wait on rather than a silent one.
+    $blocker = Get-BlockingWindow $option.Action
+    if ($blocker) {
+        if ($blocker -eq $option.Action) {
+            Write-Host ("`n  [!] {0} is already running in its own window." -f $option.Label) -ForegroundColor Yellow
+            Write-Host "      Finish that one first, or pick another item." -ForegroundColor DarkGray
+        }
+        else {
+            $blockerLabel = ($MenuOptions | Where-Object { $_.Action -eq $blocker } | Select-Object -First 1).Label
+            Write-Host ("`n  [!] {0} cannot start while {1} is running." -f $option.Label, $blockerLabel) -ForegroundColor Yellow
+            Write-Host "      Both drive the same installer engine - only one of them at a time." -ForegroundColor DarkGray
+        }
+        Start-Sleep -Seconds 2
+        continue
+    }
+
+    if (Start-FeatureWindow -Action $option.Action) {
+        Write-Host ("`n  {0} {1} opened in a new window." -f $Script:Glyph.Ok, $option.Label) -ForegroundColor Green
+    }
+    # Long enough to read either message, and it keeps a held-down key from
+    # firing off several windows before the first shows up as [running].
+    Start-Sleep -Seconds 2
 }
 
