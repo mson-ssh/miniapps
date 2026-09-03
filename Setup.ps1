@@ -8,12 +8,14 @@
 # First possible line of output: "irm | iex" has to finish downloading this
 # whole file before any of it can run, so nothing can be shown during that
 # fetch - this line at least fires the instant execution starts, instead of
-# staying blank all the way through UAC elevation too. The percentages here
-# are progress through this startup sequence, not byte counts - the file is
-# only ~90KB, so a real transfer percentage would jump 0->100 in one frame
-# and not be worth showing.
-Write-Host "MiniApp is starting... [10%]" -ForegroundColor Cyan
-Write-Host "Powered by Minh Son AZ" -ForegroundColor DarkGray
+# leaving a blank console all the way through UAC elevation too.
+#
+# One line, printed once, and left standing until the menu clears the screen.
+# It stood at three staged percentages before, which read as progress the
+# script could not honour: the stages are not evenly spaced, the longest wait
+# by far falls after the last of them, and the elevated window never reached
+# the third at all.
+Write-Host "Loading ..." -ForegroundColor Cyan
 
 # Configure TLS 1.2 to prevent GitHub downloads from being blocked
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -124,7 +126,6 @@ $Script:Glyph = if ($Script:CanReposition) {
        H = "-"; V = "|"; TL = "+"; TR = "+"; BL = "+"; BR = "+" }
 }
 
-Write-Host "MiniApp is starting... [50%]" -ForegroundColor Cyan
 
 # =========================================================================
 # AUTO-ELEVATE TO ADMINISTRATOR (UAC PROMPT)
@@ -143,7 +144,6 @@ if (-not $isAdmin) {
             $parent = Split-Path $tempScript -Parent
             if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
             Invoke-WebRequest -Uri $SelfUrl -OutFile $tempScript -UseBasicParsing -ErrorAction Stop
-            Write-Host "MiniApp is starting... [100%] Launching..." -ForegroundColor Cyan
             Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
         }
         catch {
