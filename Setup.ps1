@@ -1495,7 +1495,10 @@ function Show-SystemInfo {
         # suite is actually on disk, so a box carrying both gets both sets.
         # 'Office' / 'Wps' = only create shortcuts for that suite, matching
         # the licence answer from Read-OfficeChoice.
-        [ValidateSet('', 'Office', 'Wps')][string]$OfficeChoice = ''
+        [ValidateSet('', 'Office', 'Wps')][string]$OfficeChoice = '',
+        # A build that already finished - Optimize Install compiles info.exe in
+        # the background while the apps install. Empty means build it here.
+        [string]$InfoExePath = ''
     )
 
     # Builds/places info.exe on the Desktop, then launches it as its own
@@ -1504,7 +1507,8 @@ function Show-SystemInfo {
     # the PowerShell window also killed the info window, since it lived in
     # the same process). Started detached, so it keeps running independently
     # even after Setup.ps1 exits.
-    $infoExePath = Publish-InfoExe
+    $infoExePath = $InfoExePath
+    if ([string]::IsNullOrWhiteSpace($infoExePath)) { $infoExePath = Publish-InfoExe }
     # Two separate ifs, not "-and": PowerShell's -and always evaluates both
     # sides (it does not short-circuit), so Test-Path would still run - and
     # throw on a null/empty path - even when $infoExePath came back empty.
@@ -1580,6 +1584,29 @@ function Invoke-OptimizeInstall {
     Write-Host "`n[System] Starting Debloat in the background..." -ForegroundColor Magenta
     $debloatJob = Start-Job -ScriptBlock $DebloatScript
 
+    # info.exe is compiled alongside the installs. Fetching the ps2exe module
+    # from PSGallery and running the compile is most of a minute on a machine
+    # that has not done it before, and none of it waits on the apps - only the
+    # desktop shortcuts do, and those stay at the end where they belong.
+    #
+    # A job starts in a fresh session holding none of this script's functions,
+    # and Publish-InfoExe is far too long to duplicate just to reach it, so the
+    # live definitions are handed over and re-declared on the far side.
+    Write-Host "[System] Building info.exe in the background..." -ForegroundColor Magenta
+    $infoFunctions = (Get-Command New-InfoIcon, Publish-InfoExe |
+        ForEach-Object { "function $($_.Name) { $($_.ScriptBlock) }" }) -join "`n"
+    $infoJob = Start-Job -ArgumentList $infoFunctions, $InfoSourceUrl -ScriptBlock {
+        param([string]$FunctionDefs, [string]$SourceUrl)
+        . ([scriptblock]::Create($FunctionDefs))
+        $InfoSourceUrl = $SourceUrl
+        # Publish-InfoExe narrates its progress to a console this job does not
+        # have. Only the path it returns is wanted here, so stream 6 is dropped
+        # rather than left to mix into that return value.
+        $path = ""
+        try { $path = Publish-InfoExe 6>$null } catch { }
+        Write-Output $path
+    }
+
     Install-NecessaryApps -Method 'Installer' -OfficeChoice $officeChoice
 
     # Bounded like the Config/Disk jobs: a wedged debloat must not strand the run
@@ -1601,9 +1628,33 @@ function Invoke-OptimizeInstall {
     }
     Remove-Job $debloatJob -Force | Out-Null
 
-    # Runs last on purpose: the Office shortcuts need the suite that was just
-    # installed to be on disk.
-    Show-SystemInfo -OfficeChoice $officeChoice
+    # Bounded the same way. A build that never finished just means Show-SystemInfo
+    # falls back to compiling it itself, so there is nothing to rescue here.
+    Write-Host "`n[System] Collecting the info.exe build..." -ForegroundColor Cyan
+    Wait-Job $infoJob -Timeout $Script:JobTimeoutSec | Out-Null
+    if ($infoJob.State -eq 'Running') {
+        Write-Host ("   [!] info.exe build still running after {0} min - stopping it." -f
+            [int]($Script:JobTimeoutSec / 60)) -ForegroundColor Red
+        Stop-Job -Job $infoJob -ErrorAction SilentlyContinue
+    }
+    # Last non-empty line: the job writes one path, but a crashed run can leave
+    # error records ahead of it.
+    $infoPath = ""
+    $infoResult = @(Receive-Job -Job $infoJob -ErrorAction SilentlyContinue) |
+                  Where-Object { $_ -is [string] -and $_ } | Select-Object -Last 1
+    if ($infoResult) { $infoPath = [string]$infoResult }
+    if ($infoPath) {
+        Write-Host "   [OK] info.exe was built while the apps installed." -ForegroundColor Green
+    }
+    else {
+        Write-Host "   [!] Background build produced nothing - building it now instead." -ForegroundColor Yellow
+    }
+    Remove-Job $infoJob -Force | Out-Null
+
+    # Runs last on purpose: the Office shortcuts probe Program Files for the
+    # suite that was just installed, so running them any earlier finds nothing
+    # and silently puts out no icons at all.
+    Show-SystemInfo -OfficeChoice $officeChoice -InfoExePath $infoPath
 }
 
 function New-InfoIcon {
