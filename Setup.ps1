@@ -1819,10 +1819,23 @@ $MenuOptions = @(
 )
 
 function Get-MenuContext {
-    # One-line machine context shown in the header
-    $os = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption -replace 'Microsoft ', ''
-    $cFree = try { [math]::Round((Get-Volume -DriveLetter C -ErrorAction Stop).SizeRemaining / 1GB) } catch { "?" }
-    $net = try { if (Test-Connection 1.1.1.1 -Count 1 -Quiet -ErrorAction SilentlyContinue) { "Online" } else { "Offline" } } catch { "?" }
+    # Machine identity shown in the header - the fields a technician writes down
+    # off the screen. Every lookup is best-effort and falls back to "-": a header
+    # field that cannot be read is not worth failing the menu over.
+    $model  = try { (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).Model.Trim() } catch { "-" }
+    $serial = try { (Get-CimInstance Win32_BIOS -ErrorAction Stop).SerialNumber.Trim() } catch { "-" }
+
+    # Caption is "Microsoft Windows 10 Pro" - the feature-update label (25H2) is
+    # not in it and has to come out of the registry. DisplayVersion is what 20H2
+    # and later write; ReleaseId is the older name for the same value, so it is
+    # a fallback rather than a second field. Neither present just means the
+    # caption is shown on its own.
+    $winVer = try { ((Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption -replace '^Microsoft\s+', '').Trim() } catch { "-" }
+    $release = try {
+        $cv = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop
+        if ($cv.DisplayVersion) { $cv.DisplayVersion } else { $cv.ReleaseId }
+    } catch { $null }
+    if ($winVer -ne "-" -and $release) { $winVer = "$winVer $release" }
 
     # When the repo was last pushed, so a technician can see at a glance whether
     # this machine pulled a current Setup.ps1. Best-effort and time-boxed: a slow
@@ -1840,7 +1853,7 @@ function Get-MenuContext {
         $stamp.ToLocalTime().ToString('yyyy-MM-dd HH:mm')
     } catch { "unknown" }
 
-    return @{ Host = $env:COMPUTERNAME; OS = $os; CFree = $cFree; Net = $net; Updated = $updated }
+    return @{ Host = $env:COMPUTERNAME; Model = $model; Serial = $serial; Windows = $winVer; Updated = $updated }
 }
 
 function Show-Menu {
@@ -1853,15 +1866,22 @@ function Show-Menu {
     # Two spaces between fields, not three: kept tight from when the box was
     # narrower (58-column interior) - a 15-char hostname plus "Offline" would
     # have overrun it at three spaces and lost its last letter.
-    Write-BoxLine ("  Host: {0}  Disk C: {1}GB free  Net: {2}" -f $Ctx.Host, $Ctx.CFree, $Ctx.Net) "DarkGray"
-    # Update sits hard right and the OS caption is what gives way, not the other
-    # way round: "Windows 10 Enterprise LTSC 2021" is long enough to shove the
-    # timestamp off the edge, and the timestamp is the half worth keeping.
-    $stamp  = "  Update: {0} " -f $Ctx.Updated
-    $osCell = $Script:UiWidth - 2 - $stamp.Length
-    $osText = "  {0}" -f $Ctx.OS
-    if ($osText.Length -gt $osCell) { $osText = $osText.Substring(0, $osCell) }
-    Write-BoxLine ($osText.PadRight($osCell) + $stamp) "DarkGray"
+    # One field per line, labels padded to a common width so every value starts
+    # in the same column. Packing these onto two lines was what forced the old
+    # header to truncate; a model name like "HP EliteBook 840 G8 Notebook PC"
+    # needs the whole width to itself. Write-BoxLine clips anything longer.
+    $fields = @(
+        @{ Label = "Host";    Value = $Ctx.Host },
+        @{ Label = "Model";   Value = $Ctx.Model },
+        @{ Label = "Serial";  Value = $Ctx.Serial },
+        @{ Label = "Windows"; Value = $Ctx.Windows },
+        @{ Label = "Update";  Value = $Ctx.Updated }
+    )
+    # Widest label is "Windows:" at 8, so 9 leaves one space before the value
+    # column and keeps the shorter labels aligned with it.
+    foreach ($f in $fields) {
+        Write-BoxLine ("  {0} {1}" -f ($f.Label + ":").PadRight(9), $f.Value) "DarkGray"
+    }
     Write-BoxBottom
     Write-Host ""
 
