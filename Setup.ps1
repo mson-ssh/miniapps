@@ -26,9 +26,11 @@ $SelfUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/Setup.ps1"
 # live on exactly one line. Feeds the "Update" stamp in the menu header.
 $CommitApiUrl = $SelfUrl -replace '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/.*$', 'https://api.github.com/repos/$1/$2/commits/$3'
 
-# Canonical source Publish-InfoExe compiles into info.exe (see info-app/ in
-# the repo). Setup.ps1 has no copy of its own to keep in sync - Show-SystemInfo
-# just builds and launches the compiled exe.
+# Two ways to get info.exe onto a machine, tried in that order by
+# Publish-InfoExe. The prebuilt binary is the normal route; the source is only
+# fetched when R2 cannot be reached and the exe has to be compiled on the spot.
+# Both are rebuilt from info-app/ in the repo, so that folder stays canonical.
+$InfoExeUrl    = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/info.exe"
 $InfoSourceUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/info-app/Info.ps1"
 
 # =========================================================================
@@ -1649,9 +1651,13 @@ function Invoke-OptimizeInstall {
     Write-Host "[System] Building info.exe in the background..." -ForegroundColor Magenta
     $infoFunctions = (Get-Command New-InfoIcon, Publish-InfoExe |
         ForEach-Object { "function $($_.Name) { $($_.ScriptBlock) }" }) -join "`n"
-    $infoJob = Start-Job -ArgumentList $infoFunctions, $InfoSourceUrl -ScriptBlock {
-        param([string]$FunctionDefs, [string]$SourceUrl)
+    # Both URLs travel with it. Publish-InfoExe reads them as script variables,
+    # and a job sees none of this script's scope - an unset $InfoExeUrl would
+    # send every machine down the slow compile path without ever saying why.
+    $infoJob = Start-Job -ArgumentList $infoFunctions, $InfoExeUrl, $InfoSourceUrl -ScriptBlock {
+        param([string]$FunctionDefs, [string]$ExeUrl, [string]$SourceUrl)
         . ([scriptblock]::Create($FunctionDefs))
+        $InfoExeUrl    = $ExeUrl
         $InfoSourceUrl = $SourceUrl
         # Publish-InfoExe narrates its progress to a console this job does not
         # have. Only the path it returns is wanted here, so stream 6 is dropped
@@ -1831,30 +1837,67 @@ public class MiniAppStockIcon {
 }
 
 function Publish-InfoExe {
-    # Builds info.exe on the client machine (via the ps2exe module) and
-    # places it on the Desktop, so the customer can reopen the hardware
-    # info window anytime later without going through Setup.ps1 again.
-    # Returns the built path so the caller can launch it, or $null if the
-    # build failed and no earlier copy is on the Desktop.
+    # Puts info.exe on the Desktop so the customer can reopen the hardware
+    # report later without going through Setup.ps1 again. Two ways to get one,
+    # tried in order:
+    #
+    #  1. Download the prebuilt copy from R2. Seconds, and every machine ends
+    #     up with the identical binary.
+    #  2. Compile it here with ps2exe. Minutes, pulls a module off PSGallery,
+    #     and wants an execution policy the machine may not have - but it works
+    #     when R2 cannot be reached.
+    #
+    # Either way it is fetched afresh every run rather than skipped when the
+    # file is already there: the old "return early if it exists" check meant the
+    # very first copy stayed on that machine forever, and later fixes to
+    # Info.ps1 could never reach a box that had run this once.
+    #
+    # Returns the path, or $null when neither route worked and no earlier copy
+    # is on the Desktop.
     $desktop = [Environment]::GetFolderPath('Desktop')
     $dest = Join-Path $desktop "info.exe"
+
+    # A copy left open from a previous run holds a write lock on the file, which
+    # would fail either route. Hoisted above both for that reason. Own errors
+    # swallowed so a process that cannot be inspected does not abort the run.
     try {
-        # Rebuilt on every run rather than skipped when the file is already
-        # there. The old "return early if it exists" check meant the very
-        # first build stayed on that machine forever - later fixes to
-        # Info.ps1 could never reach a box that had run this once.
-        Write-Host "[System] Building info.exe..." -ForegroundColor Cyan
+        Get-Process -Name 'info' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $dest } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    catch { }
 
-        # A copy left open from a previous run holds a write lock on the
-        # file, which would fail the build. Own errors swallowed separately
-        # so a process that cannot be inspected does not abort the build.
-        try {
-            Get-Process -Name 'info' -ErrorAction SilentlyContinue |
-                Where-Object { $_.Path -eq $dest } |
-                Stop-Process -Force -ErrorAction SilentlyContinue
+    $workDir = "$env:TEMP\MiniApp"
+    if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Force | Out-Null }
+
+    # --- 1. The prebuilt binary from R2 ---
+    try {
+        Write-Host "[System] Downloading info.exe..." -ForegroundColor Cyan
+        # Staged in TEMP instead of written straight to the Desktop: a transfer
+        # that dies halfway would otherwise replace a working info.exe with a
+        # truncated one.
+        $staged = "$workDir\info.exe"
+        Invoke-WebRequest -Uri $InfoExeUrl -OutFile $staged -UseBasicParsing -ErrorAction Stop
+
+        # A captive portal or a proxy error page answers 200 with HTML, and that
+        # would land on the Desktop named info.exe and fail at the double-click
+        # instead of here. Every Windows binary opens with "MZ".
+        $bytes = [System.IO.File]::ReadAllBytes($staged)
+        if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw "what came back is not a Windows executable"
         }
-        catch { }
 
+        Copy-Item -LiteralPath $staged -Destination $dest -Force -ErrorAction Stop
+        Write-Host "[OK] info.exe downloaded to Desktop." -ForegroundColor Green
+        return $dest
+    }
+    catch {
+        Write-Host "[WARN] Could not download info.exe: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[System] Building it on this machine instead..." -ForegroundColor Cyan
+    }
+
+    # --- 2. Compile it here ---
+    try {
         # The elevation relaunch (top of this script) sets -ExecutionPolicy
         # Bypass for the process, but only when Setup.ps1 actually had to
         # relaunch itself; a console already running as Administrator skips
@@ -1873,8 +1916,6 @@ function Publish-InfoExe {
         }
         Import-Module ps2exe -ErrorAction Stop
 
-        $workDir = "$env:TEMP\MiniApp"
-        if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Force | Out-Null }
         $sourcePs1 = "$workDir\Info.ps1"
         $iconPath  = "$workDir\info.ico"
 
@@ -1924,7 +1965,7 @@ function Publish-InfoExe {
         return $dest
     }
     catch {
-        Write-Host "[WARN] Could not build info.exe: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[WARN] Could not build info.exe either: $($_.Exception.Message)" -ForegroundColor Yellow
         # A build from an earlier run may still be sitting on the Desktop.
         # Opening that is better than opening nothing, even if it is stale.
         if (Test-Path $dest) {
