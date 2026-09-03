@@ -947,7 +947,10 @@ function Install-NecessaryApps {
         # Empty means "nobody asked yet, ask now"; the rest are what
         # Read-OfficeChoice returns. Kept out of [bool] so cancelling stays a
         # state of its own instead of being read as "no licence".
-        [ValidateSet('', 'Office', 'Wps', 'Cancel')][string]$OfficeChoice = ''
+        [ValidateSet('', 'Office', 'Wps', 'Cancel')][string]$OfficeChoice = '',
+        # Optimize Install wants the desktop icons put out the moment the office
+        # suite is on disk. Menu 2 never made icons and still does not.
+        [switch]$WithOfficeShortcuts
     )
 
     # WPS Office takes over the Office 2024 slot when the machine has no licence
@@ -1111,6 +1114,20 @@ function Install-NecessaryApps {
         Write-Host ("   [+] {0} - {1}" -f $app.Name.PadRight(13), $appStates[$app.Name]) -ForegroundColor Yellow
     }
 
+    # --- Office desktop icons, fired the moment the suite is on disk ---
+    # New-DesktopShortcuts probes Program Files, so it cannot run before the
+    # installer finishes - but there is no reason for it to wait on the rest of
+    # the run either.
+    $officeSlot  = ""
+    $officeReady = $false
+    $shortcutJob = $null
+    if ($WithOfficeShortcuts) {
+        $officeSlot = if ($OfficeChoice -eq 'Wps') { "WPS Office" } else { "Office 2024" }
+        # A suite that was already on the machine still wants its icons, and no
+        # install is going to come along later to trigger them.
+        if ($appStates[$officeSlot] -eq "Already Installed") { $officeReady = $true }
+    }
+
     # Catalog order decides who goes first inside a serial group
     $orderIndex = @{}
     for ($i = 0; $i -lt $catalog.Count; $i++) { $orderIndex[$catalog[$i].Name] = $i }
@@ -1215,8 +1232,17 @@ function Install-NecessaryApps {
 
             if ($done) {
                 $running.Remove($key)
+                # Only a suite that actually installed counts; a failed or timed
+                # out one has nothing on disk to point a shortcut at.
+                if ($key -eq $officeSlot -and $appStates[$key] -eq "Done") { $officeReady = $true }
                 $dirty = $true
             }
+        }
+
+        # Fired once, as soon as the suite lands - not at the end of the run.
+        if ($officeReady -and -not $shortcutJob) {
+            $shortcutJob = Start-OfficeShortcutJob -OfficeChoice $OfficeChoice
+            $backgroundJobs += $shortcutJob
         }
 
         # --- 3. Launch whatever is ready, in parallel ---
@@ -1291,6 +1317,13 @@ function Install-NecessaryApps {
     foreach ($ev in $dlEvents) {
         Unregister-Event -SourceIdentifier $ev.Name -ErrorAction SilentlyContinue
         Remove-Job -Id $ev.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    # A run where every app was skipped never entered the loop above, so the
+    # fire point inside it never came round.
+    if ($officeReady -and -not $shortcutJob) {
+        $shortcutJob = Start-OfficeShortcutJob -OfficeChoice $OfficeChoice
+        $backgroundJobs += $shortcutJob
     }
 
     # --- Wait for background jobs and report what they actually did ---
@@ -1489,6 +1522,27 @@ function New-DesktopShortcuts {
     }
 }
 
+function Start-OfficeShortcutJob {
+    # New-DesktopShortcuts, run in the background. It prints, and the install
+    # progress table is drawn with SetCursorPosition - a line arriving mid-frame
+    # tears it - so its output is held inside the job and printed with the rest
+    # of the background results once the table is finished.
+    #
+    # The live definition is shipped in because a job starts in a fresh session
+    # holding none of this script's functions; duplicating it here would leave
+    # two copies to keep in step by hand.
+    param([ValidateSet('', 'Office', 'Wps')][string]$OfficeChoice = '')
+
+    $defs = "function New-DesktopShortcuts { $((Get-Command New-DesktopShortcuts).ScriptBlock) }"
+    return Start-Job -ArgumentList $defs, $OfficeChoice -ScriptBlock {
+        param([string]$FunctionDefs, [string]$Choice)
+        . ([scriptblock]::Create($FunctionDefs))
+        # Every stream folded into one and stringified: Write-Host lines are the
+        # whole of what this reports, and they are worth keeping.
+        New-DesktopShortcuts -OfficeChoice $Choice *>&1 | ForEach-Object { "[Icons] $_" }
+    }
+}
+
 function Show-SystemInfo {
     param(
         # '' = no known context (standalone menu access): detect whichever
@@ -1604,10 +1658,16 @@ function Invoke-OptimizeInstall {
         # rather than left to mix into that return value.
         $path = ""
         try { $path = Publish-InfoExe 6>$null } catch { }
+        # Opened here rather than back in the menu window once everything else
+        # is done. The point of building it early is that it is ready early;
+        # holding it until the installs finish would hand that back.
+        if ($path -and (Test-Path -LiteralPath $path)) {
+            try { Start-Process -FilePath $path -ErrorAction Stop } catch { }
+        }
         Write-Output $path
     }
 
-    Install-NecessaryApps -Method 'Installer' -OfficeChoice $officeChoice
+    Install-NecessaryApps -Method 'Installer' -OfficeChoice $officeChoice -WithOfficeShortcuts
 
     # Bounded like the Config/Disk jobs: a wedged debloat must not strand the run
     Write-Host "`n[System] Waiting for the Debloat job to finish..." -ForegroundColor Cyan
@@ -1643,18 +1703,20 @@ function Invoke-OptimizeInstall {
     $infoResult = @(Receive-Job -Job $infoJob -ErrorAction SilentlyContinue) |
                   Where-Object { $_ -is [string] -and $_ } | Select-Object -Last 1
     if ($infoResult) { $infoPath = [string]$infoResult }
-    if ($infoPath) {
-        Write-Host "   [OK] info.exe was built while the apps installed." -ForegroundColor Green
-    }
-    else {
-        Write-Host "   [!] Background build produced nothing - building it now instead." -ForegroundColor Yellow
-    }
     Remove-Job $infoJob -Force | Out-Null
 
-    # Runs last on purpose: the Office shortcuts probe Program Files for the
-    # suite that was just installed, so running them any earlier finds nothing
-    # and silently puts out no icons at all.
-    Show-SystemInfo -OfficeChoice $officeChoice -InfoExePath $infoPath
+    # Both halves are already done by the time control reaches here: the job
+    # opened info.exe as soon as it had built it, and the engine put the desktop
+    # icons out as soon as the office suite landed. Nothing is left but to say so
+    # - or, if the background build came back with nothing, to do it the slow way
+    # after all.
+    if ($infoPath) {
+        Write-Host "   [OK] info.exe was built and opened while the apps installed." -ForegroundColor Green
+    }
+    else {
+        Write-Host "   [!] Background build produced nothing - doing the info step now." -ForegroundColor Yellow
+        Show-SystemInfo -OfficeChoice $officeChoice
+    }
 }
 
 function New-InfoIcon {
