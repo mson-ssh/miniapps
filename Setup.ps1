@@ -847,6 +847,23 @@ function Write-BoxTop    { Write-Host ($Script:Glyph.TL + ($Script:Glyph.H * ($S
 function Write-BoxBottom { Write-Host ($Script:Glyph.BL + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.BR) -ForegroundColor Cyan }
 function Write-BoxSep    { Write-Host ($Script:Glyph.V + ($Script:Glyph.H * ($Script:UiWidth - 2)) + $Script:Glyph.V) -ForegroundColor DarkCyan }
 
+function Format-HeaderCell {
+    # One label+value cell of the menu header, padded to a fixed width so the
+    # cells below it line up. A value too long for its cell ends in ".." rather
+    # than being cut silently: the serial number is read off this screen and
+    # copied onto a job sheet, and a shortened one would be wrong without
+    # looking wrong.
+    param([string]$Label, [string]$Value, [int]$LabelWidth, [int]$CellWidth)
+
+    # Two columns of the cell are held back as a gutter so a value that fills it
+    # still has clear air before the next label. Without that, a clipped value
+    # runs its ".." straight into the label beside it - "Notebo..Serial:".
+    $max = $CellWidth - 2
+    if ([string]::IsNullOrWhiteSpace($Value)) { $Value = "-" }
+    if ($Value.Length -gt $max) { $Value = $Value.Substring(0, $max - 2) + ".." }
+    return ($Label + ":").PadRight($LabelWidth) + $Value.PadRight($CellWidth)
+}
+
 function Set-CursorTop {
     # Reposition only when a real console buffer exists
     param([int]$Top)
@@ -1866,22 +1883,24 @@ function Show-Menu {
     # Two spaces between fields, not three: kept tight from when the box was
     # narrower (58-column interior) - a 15-char hostname plus "Offline" would
     # have overrun it at three spaces and lost its last letter.
-    # One field per line, labels padded to a common width so every value starts
-    # in the same column. Packing these onto two lines was what forced the old
-    # header to truncate; a model name like "HP EliteBook 840 G8 Notebook PC"
-    # needs the whole width to itself. Write-BoxLine clips anything longer.
-    $fields = @(
-        @{ Label = "Host";    Value = $Ctx.Host },
-        @{ Label = "Model";   Value = $Ctx.Model },
-        @{ Label = "Serial";  Value = $Ctx.Serial },
-        @{ Label = "Windows"; Value = $Ctx.Windows },
-        @{ Label = "Update";  Value = $Ctx.Updated }
-    )
-    # Widest label is "Windows:" at 8, so 9 leaves one space before the value
-    # column and keeps the shorter labels aligned with it.
-    foreach ($f in $fields) {
-        Write-BoxLine ("  {0} {1}" -f ($f.Label + ":").PadRight(9), $f.Value) "DarkGray"
-    }
+    # Two columns over three lines. Label widths are the widest label in each
+    # column plus a space - "Update:" on the left, "Serial:" on the right - and
+    # what is left over splits evenly, so all four value cells start on one of
+    # two columns whatever the machine is called.
+    #
+    # The right-hand label is "OS", not "Windows": the value already begins with
+    # the word, and "Windows: Windows 10 Pro 22H2" would spend five characters
+    # of a tight line saying it twice.
+    $lw = 8
+    $rw = 8
+    $cell = [int](($Script:UiWidth - 2 - 2 - $lw - $rw) / 2)
+    Write-BoxLine ("  " + (Format-HeaderCell "Host"  $Ctx.Host  $lw $cell) +
+                          (Format-HeaderCell "OS"     $Ctx.Windows $rw $cell)) "DarkGray"
+    Write-BoxLine ("  " + (Format-HeaderCell "Model" $Ctx.Model $lw $cell) +
+                          (Format-HeaderCell "Serial" $Ctx.Serial  $rw $cell)) "DarkGray"
+    # Update has the line to itself, so it gets both cells and the label the
+    # second column would have used.
+    Write-BoxLine ("  " + (Format-HeaderCell "Update" $Ctx.Updated $lw (($cell * 2) + $rw))) "DarkGray"
     Write-BoxBottom
     Write-Host ""
 
