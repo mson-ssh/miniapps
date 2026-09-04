@@ -192,8 +192,21 @@ Danh sách này **cố ý hẹp**. Loại nhầm một driver thật chính là 
 trường `Type`/`PackageType` mang giá trị nhận ra được thì nó cũng **chỉ dùng để loại trừ**, không
 bao giờ dùng làm điều kiện nhận.
 
-Tầng thứ hai vẫn là `Installer.Unattended` — installer tương tác sẽ đứng chờ một cú bấm không ai đưa
-và treo cả lượt chạy.
+Tầng thứ hai là unattended — installer tương tác sẽ đứng chờ một cú bấm không ai đưa và treo cả
+lượt chạy. Nhưng **chỉ package tự nói mình là tương tác mới bị chặn**.
+
+> **Bẫy thứ ba, cùng một khuôn mẫu.** Dòng cũ là `-not $pkg.Installer.Unattended`, và trên máy thật
+> nó giữ lại **cả 12/12**: trường vắng mặt cho `$null`, `$null` là falsy, nên mọi driver trông như
+> installer tương tác. Y hệt lỗi `Category` ngay trước đó — **đòi một câu trả lời dương tính từ một
+> trường không xác minh được**, khiến sự im lặng bị hiểu thành "không".
+>
+> Giờ im lặng cho qua, **chỉ một câu "không" rõ ràng mới chặn**. Thử vài cách viết tên
+> (`Unattended`, `IsUnattended`, `SupportsUnattended`, `Silent`), và so chuỗi bằng chuỗi — vì
+> `[bool]'False'` trong PowerShell là **`$true`**, cast ẩu sẽ cho package tương tác lọt qua.
+
+Và để loại bẫy này khỏi lặp lại: bước 3 giờ **in ra danh sách property thật** của package đầu tiên và
+của `Installer` bên trong nó. Cả ba lần đoán sai đều là phỏng đoán về object này rút từ tài liệu; một
+dòng output thật giải quyết lần sau mà không cần thêm một vòng thử-sai.
 
 Và nếu **mọi** package đều bị giữ lại, tool in ra `[NOTHING TO DO]` kèm **bảng các Category nó thấy**
 thay vì báo "không có gì cần cập nhật" — chính cách nói dối đó đã khiến 12 driver âm thầm không được

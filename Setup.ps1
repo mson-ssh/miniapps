@@ -2385,6 +2385,32 @@ $Script:LnvExcluded = @(
     @{ Label = "application"; Pattern = '(?i)\b(vantage|application)\b' }
 )
 
+function Test-LnvUnattended {
+    # $false only when the module says so outright.
+    #
+    # This read "-not $pkg.Installer.Unattended", and on a real machine it held
+    # back all twelve packages: an absent property is $null, $null is falsy, and
+    # every driver looked interactive. Same shape as the Category bug before it -
+    # demanding a positive answer from a field that could not be verified from
+    # here, so silence became a "no".
+    #
+    # Lenovo's driver packages are unattended as a rule, and the point of the
+    # tool is to install them. So an unknown answer lets the package through and
+    # only an explicit negative stops it. Several spellings are tried because
+    # which one this module version uses is exactly what could not be confirmed.
+    param([object]$Package)
+
+    foreach ($name in 'Unattended', 'IsUnattended', 'SupportsUnattended', 'Silent') {
+        $value = $null
+        try { $value = $Package.Installer.$name } catch { }
+        if ($null -eq $value) { continue }
+        # A string "False" is $true once cast, so text is compared as text.
+        if ($value -is [string]) { return ($value -notmatch '(?i)^(false|no|0)$') }
+        return [bool]$value
+    }
+    return $true
+}
+
 function Get-LnvExclusionReason {
     # Why this package is not a driver update, or "" when it is one.
     #
@@ -2625,6 +2651,22 @@ function Invoke-LenovoDriverUpdate {
     # --- Filter, before anything is downloaded. BIOS, firmware and applications
     #     do not pass here even when they arrived in the same scan result. ---
     Write-Host "`n[3/4] Holding back BIOS, firmware and applications..." -ForegroundColor Cyan
+
+    # What the module actually hands over, printed once. Every wrong turn this
+    # tool has taken - Category holding device names, Unattended not being there
+    # - was a guess about this object made from documentation. One line of real
+    # output settles the next one without another round trip.
+    if ($all.Count -gt 0) {
+        $pkgProps = try {
+            (($all[0] | Get-Member -MemberType Properties -ErrorAction Stop).Name) -join ', '
+        } catch { "(unreadable)" }
+        $instProps = try {
+            (($all[0].Installer | Get-Member -MemberType Properties -ErrorAction Stop).Name) -join ', '
+        } catch { "(no Installer object)" }
+        Write-Host "      Package properties : $pkgProps" -ForegroundColor DarkGray
+        Write-Host "      Installer properties: $instProps" -ForegroundColor DarkGray
+    }
+
     $drivers = @()
     $skipped = @()
     foreach ($pkg in $all) {
@@ -2633,11 +2675,11 @@ function Invoke-LenovoDriverUpdate {
             $skipped += @{ Pkg = $pkg; Why = $reason }
             continue
         }
-        # Lenovo's own guidance: always filter on Installer.Unattended. An
-        # interactive installer waits for input nobody is there to give and
-        # hangs the run.
-        if (-not $pkg.Installer.Unattended) {
-            $skipped += @{ Pkg = $pkg; Why = "installer is not unattended" }
+        # An interactive installer waits for input nobody is there to give and
+        # hangs the run - but only a package that actually says it is interactive
+        # is held back. See Test-LnvUnattended for why silence is not a "no".
+        if (-not (Test-LnvUnattended -Package $pkg)) {
+            $skipped += @{ Pkg = $pkg; Why = "installer reports it is not unattended" }
             continue
         }
         $drivers += $pkg
