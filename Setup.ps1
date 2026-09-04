@@ -699,29 +699,114 @@ function Get-WingetVersion {
     return $null
 }
 
+$Script:WingetRelease = "https://github.com/microsoft/winget-cli/releases/latest/download"
+
+function Get-WingetVersionText {
+    # The banner as winget prints it ("v1.29.290"), for showing a before/after.
+    # Get-WingetVersion above deliberately narrows to major.minor for comparing;
+    # that is too coarse to show someone whether anything actually changed.
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { return "not installed" }
+    try { return "$(& winget --version 2>&1)".Trim() } catch { return "not installed" }
+}
+
+function Get-WingetTargetArch {
+    # x64 / x86 / arm64, matching the folder names inside the dependency zip.
+    # PROCESSOR_ARCHITECTURE reports the *process* architecture, so a 32-bit
+    # PowerShell on 64-bit Windows says x86 - PROCESSOR_ARCHITEW6432 is what the
+    # OS actually is in that case.
+    $raw = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    switch ($raw) {
+        'AMD64' { return 'x64' }
+        'ARM64' { return 'arm64' }
+        'x86'   { return 'x86' }
+        default { return 'x64' }
+    }
+}
+
+function Install-WingetDependencies {
+    # App Installer refuses to register when a framework it declares is missing
+    # or too old, and that single failure is the whole of winget-cli issues
+    # #5559 and #5772 - both still open.
+    #
+    # So the list is read from the release itself at run time instead of URLs
+    # being pinned in this file. The pinned ones had already rotted twice over:
+    # Microsoft.UI.Xaml 2.8 stopped being a dependency at all when App Installer
+    # moved from WinUI 2 to WinUI 3 (1.12.350 onward) and became
+    # Microsoft.WindowsAppRuntime, and aka.ms/Microsoft.VCLibs.x64.14.00.Desktop
+    # .appx serves 14.0.33321.0 against the 14.0.33728.0 the current release
+    # asks for - which is #5772 exactly.
+    param([string]$WorkDir)
+
+    $arch = Get-WingetTargetArch
+    $deps = (Invoke-RestMethod -Uri "$Script:WingetRelease/DesktopAppInstaller_Dependencies.json" `
+                               -UseBasicParsing -ErrorAction Stop).Dependencies
+
+    # Anything already registered at or above the declared version is left
+    # alone. This is what keeps the ~93MB dependency download off the machines
+    # that do not need it.
+    $missing = @()
+    foreach ($dep in $deps) {
+        $need = [version]$dep.Version
+        $have = Get-AppxPackage -Name $dep.Name -ErrorAction SilentlyContinue |
+                Where-Object { "$($_.Architecture)" -eq $arch -or "$($_.Architecture)" -eq 'Neutral' } |
+                Where-Object { [version]$_.Version -ge $need }
+        if ($have) { Write-Host "   [-] $($dep.Name) $($dep.Version) already present" -ForegroundColor DarkGray }
+        else       { $missing += $dep }
+    }
+    if ($missing.Count -eq 0) { return }
+
+    Write-Host ("   [+] Fetching {0} framework package(s) (~93MB)..." -f $missing.Count) -ForegroundColor Gray
+    $zip = Join-Path $WorkDir "WingetDeps.zip"
+    $out = Join-Path $WorkDir "WingetDeps"
+    Invoke-WebRequest -Uri "$Script:WingetRelease/DesktopAppInstaller_Dependencies.zip" `
+                      -OutFile $zip -UseBasicParsing -ErrorAction Stop
+    if (Test-Path $out) { Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue }
+    Expand-Archive -LiteralPath $zip -DestinationPath $out -Force -ErrorAction Stop
+
+    foreach ($dep in $missing) {
+        # The underscore in the filter is load-bearing: without it
+        # "Microsoft.VCLibs.140.00_*" would also match the .UWPDesktop package,
+        # and the two are separate dependencies at different versions.
+        $file = Get-ChildItem -Path (Join-Path $out $arch) -Filter "$($dep.Name)_*.appx" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        if (-not $file) { throw "$($dep.Name) is not in the $arch dependency package" }
+        Write-Host "   [+] $($dep.Name) $($dep.Version)" -ForegroundColor Gray
+        Add-AppxPackage -Path $file.FullName -ErrorAction Stop
+    }
+}
+
 function Install-AppInstaller {
-    # Fetches App Installer (~200MB) plus its two framework packages from GitHub
-    # and registers them. Serves both a missing winget and one too old to trust.
+    # Registers the current App Installer, frameworks first. Serves both a
+    # missing winget and one too old to trust. Emits nothing - callers read the
+    # result back with Get-WingetVersion, so this cannot leak a return value
+    # into the output of whatever called it.
     $tempDir = "$env:TEMP\MiniApp"
     if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
+    $bundle = "$tempDir\Winget.msixbundle"
 
     try {
-        Invoke-WebRequest -Uri "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx" -OutFile "$tempDir\VCLibs.appx" -UseBasicParsing -ErrorAction Stop
-        Invoke-WebRequest -Uri "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx" -OutFile "$tempDir\UiXaml.appx" -UseBasicParsing -ErrorAction Stop
-        Invoke-WebRequest -Uri "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" -OutFile "$tempDir\Winget.msixbundle" -UseBasicParsing -ErrorAction Stop
+        Write-Host "-> Checking App Installer dependencies..." -ForegroundColor Gray
+        Install-WingetDependencies -WorkDir $tempDir
 
-        Add-AppxPackage -Path "$tempDir\VCLibs.appx" -ErrorAction SilentlyContinue
-        Add-AppxPackage -Path "$tempDir\UiXaml.appx" -ErrorAction SilentlyContinue
-        # -ForceApplicationShutdown is what makes this an upgrade path and not just
-        # a first install: replacing an already registered App Installer fails
-        # while anything still holds it open.
-        Add-AppxPackage -Path "$tempDir\Winget.msixbundle" -ForceApplicationShutdown -ErrorAction SilentlyContinue
+        Write-Host "-> Downloading App Installer (~207MB)..." -ForegroundColor Gray
+        Invoke-WebRequest -Uri "$Script:WingetRelease/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" `
+                          -OutFile $bundle -UseBasicParsing -ErrorAction Stop
+
+        # -ForceApplicationShutdown is what makes this an upgrade path and not
+        # just a first install: replacing an already registered App Installer
+        # fails while anything still holds it open.
+        Write-Host "-> Registering App Installer..." -ForegroundColor Gray
+        Add-AppxPackage -Path $bundle -ForceApplicationShutdown -ErrorAction Stop
     }
     catch {
-        Write-Host "-> Winget download failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        # Reported, not swallowed. Every Add-AppxPackage here used to carry
+        # -ErrorAction SilentlyContinue, so a machine missing a framework came
+        # out of this function looking successful and with no winget on it.
+        Write-Host "-> Winget install failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
     finally {
-        Remove-Item "$tempDir\VCLibs.appx", "$tempDir\UiXaml.appx", "$tempDir\Winget.msixbundle" -Force -ErrorAction SilentlyContinue
+        Remove-Item $bundle, "$tempDir\WingetDeps.zip" -Force -ErrorAction SilentlyContinue
+        Remove-Item "$tempDir\WingetDeps" -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1682,6 +1767,34 @@ function Show-SystemInfo {
     New-DesktopShortcuts -OfficeChoice $OfficeChoice
 }
 
+function Update-Winget {
+    # Menu action. Windows ships App Installer and updates it through the Store,
+    # which is exactly what a freshly imaged machine has not done yet - and on a
+    # box where the Store is broken or stripped, never will. This takes the same
+    # package straight from Microsoft's GitHub releases instead.
+    Write-Host "`n[Winget] Updating the Windows Package Manager..." -ForegroundColor Magenta
+    $beforeText = Get-WingetVersionText
+    $before     = Get-WingetVersion
+    Write-Host "   Installed now: $beforeText" -ForegroundColor Gray
+
+    Install-AppInstaller
+
+    $afterText = Get-WingetVersionText
+    $after     = Get-WingetVersion
+    Write-Host ""
+    if ($null -eq $after) {
+        Write-Host "[ERROR] Winget is still not available on this machine." -ForegroundColor Red
+        Write-Host "        The reason is printed above." -ForegroundColor DarkGray
+        return
+    }
+    if ($null -ne $before -and $afterText -eq $beforeText) {
+        Write-Host "[OK] Already current: $afterText" -ForegroundColor Green
+    }
+    else {
+        Write-Host ("[OK] Winget {0} -> {1}" -f $beforeText, $afterText) -ForegroundColor Green
+    }
+}
+
 function Invoke-Debloatware {
     Write-Host "`n[System] Launching Win11Debloat (silent default profile)..." -ForegroundColor Cyan
     try {
@@ -2077,6 +2190,7 @@ $MenuOptions = @(
     @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel";  Action = "Install"  },
     @{ Label = "System Information";       Desc = "Hardware info in a GUI window + build info.exe";   Action = "Info"     },
     @{ Label = "Debloat Windows";          Desc = "Remove bloatware (Win11Debloat defaults)";         Action = "Debloat"  },
+    @{ Label = "Update Winget";            Desc = "Latest App Installer from GitHub, no Store needed"; Action = "Winget"   },
     @{ Label = "Exit";                     Desc = "Close the tool";                                   Action = ""         }
 )
 
@@ -2236,7 +2350,7 @@ function Show-Menu {
         }
     }
     Write-Host ""
-    Write-Host "  Up/Down + Enter, a number key, or A/S/I/D/Q to run directly." -ForegroundColor DarkGray
+    Write-Host "  Up/Down + Enter, a number key, or A/S/I/D/W/Q to run directly." -ForegroundColor DarkGray
     Write-Host "  Each item opens its own window - this menu stays usable." -ForegroundColor DarkGray
 }
 
@@ -2268,13 +2382,16 @@ function Read-MenuChoice {
             'NumPad4'   { return 3 }
             'D5'        { return 4 }
             'NumPad5'   { return 4 }
+            'D6'        { return 5 }
+            'NumPad6'   { return 5 }
             # Direct-run letter shortcuts, one per menu item - fire immediately,
             # no Enter needed (unlike the number keys they're identical to).
             'A'         { return 0 }
             'S'         { return 1 }
             'I'         { return 2 }
             'D'         { return 3 }
-            'Q'         { return 4 }
+            'W'         { return 4 }
+            'Q'         { return 5 }
         }
     }
 }
@@ -2318,6 +2435,10 @@ function Get-FeatureWindow {
 $ExclusiveGroups = @{
     "Optimize" = "install"
     "Install"  = "install"
+    # Replacing App Installer uses -ForceApplicationShutdown, and the engine's
+    # winget rescue pass shoots through the same client - swapping it out from
+    # under a run already in progress is asking for it.
+    "Winget"   = "install"
 }
 
 function Get-BlockingWindow {
@@ -2394,6 +2515,7 @@ if ($MiniAppAction) {
         'Install'  { Install-NecessaryApps -Method 'Installer' }
         'Info'     { Show-SystemInfo }
         'Debloat'  { Invoke-Debloatware }
+        'Winget'   { Update-Winget }
         default    { Write-Host "[ERROR] Unknown action '$MiniAppAction'." -ForegroundColor Red }
     }
     exit
