@@ -2510,7 +2510,7 @@ $MenuOptions = @(
     @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel";  Action = "Install"  },
     @{ Label = "System Information";       Desc = "Hardware info in a GUI window + build info.exe";   Action = "Info"     },
     @{ Label = "Debloat Windows";          Desc = "Remove bloatware (Win11Debloat defaults)";         Action = "Debloat"  },
-    @{ Label = "CLI-TOOL";                 Desc = "Command-line utilities (Winget updater, more later)"; Action = "CliTool"  },
+    @{ Label = "CLI-TOOL";                 Desc = "Command-line utilities (C++ dev environment)";        Action = "CliTool"  },
     @{ Label = "Exit";                     Desc = "Close the tool";                                   Action = ""         }
 )
 
