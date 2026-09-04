@@ -35,6 +35,24 @@ $CommitApiUrl = $SelfUrl -replace '^https://raw\.githubusercontent\.com/([^/]+)/
 $InfoExeUrl    = "https://pub-50d6cf4af6964541b0621bbc9bc26690.r2.dev/info.exe"
 $InfoSourceUrl = "https://raw.githubusercontent.com/mson-ssh/miniapps/main/info-app/Info.ps1"
 
+function Get-NoCacheUrl {
+    # raw.githubusercontent.com sits behind Fastly with "cache-control:
+    # max-age=300", so for five minutes after a push an edge can still hand back
+    # the previous file. That is how a machine ends up running yesterday's script
+    # and reporting a bug that was fixed hours ago - and it hits every place this
+    # file fetches itself, including the elevation relaunch and every feature
+    # window.
+    #
+    # A unique query string misses the cached object and is served from origin.
+    # raw ignores parameters it does not recognise. Only the two URLs carrying
+    # code that changes often go through here: the app installers are
+    # third-party binaries that do not move, and busting their cache would throw
+    # away the CDN on 400MB of downloads for nothing.
+    param([string]$Url)
+    $sep = if ($Url -match '\?') { '&' } else { '?' }
+    return ("{0}{1}_={2}" -f $Url, $sep, [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+}
+
 # =========================================================================
 # UI FOUNDATION - encoding, terminal capability detection, glyph set
 # Set first so even elevation errors render correctly.
@@ -143,7 +161,7 @@ if (-not $isAdmin) {
             # -OutFile does not create parent dirs; MiniApp does not exist yet here
             $parent = Split-Path $tempScript -Parent
             if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-            Invoke-WebRequest -Uri $SelfUrl -OutFile $tempScript -UseBasicParsing -ErrorAction Stop
+            Invoke-WebRequest -Uri (Get-NoCacheUrl $SelfUrl) -OutFile $tempScript -UseBasicParsing -ErrorAction Stop
             Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
         }
         catch {
@@ -3350,7 +3368,7 @@ function Publish-InfoExe {
         $sourcePs1 = "$workDir\Info.ps1"
         $iconPath  = "$workDir\info.ico"
 
-        Invoke-WebRequest -Uri $InfoSourceUrl -OutFile $sourcePs1 -UseBasicParsing -ErrorAction Stop
+        Invoke-WebRequest -Uri (Get-NoCacheUrl $InfoSourceUrl) -OutFile $sourcePs1 -UseBasicParsing -ErrorAction Stop
         # A missing icon is not worth failing the build over - ps2exe just
         # falls back to its own default and info.exe still works.
         $useIcon = $true
@@ -3707,9 +3725,11 @@ function Start-FeatureWindow {
     $boot = "$workDir\run-$Action.ps1"
 
     try {
+        # The bootstrap is rewritten on every launch, so the cache-buster in it
+        # is fresh each time a window opens.
         Set-Content -LiteralPath $boot -Encoding UTF8 -Force -ErrorAction Stop -Value @(
             "`$MiniAppAction = '$Action'"
-            "iex (irm '$SelfUrl')"
+            "iex (irm '$(Get-NoCacheUrl $SelfUrl)')"
         )
         # -File with the path quoted: %TEMP% lives under the user profile, and a
         # username with a space in it would otherwise split into two arguments.
