@@ -170,9 +170,34 @@ Luồng: preflight (Lenovo commercial → Win10/11 + PS5+ → elevated → reboo
 package cần và phù hợp) → lọc → báo cáo → xác nhận → `Save-LnvUpdate` → `Install-LnvUpdate
 -ExportToWMI`.
 
-**Lọc phải xong trước khi tải bất cứ gì**, hai tầng: `Category` phải là `Driver`, **và**
-`Installer.Unattended` phải đúng — installer tương tác sẽ đứng chờ một cú bấm không ai đưa và treo
-cả lượt chạy. BIOS/firmware/application bị đẩy sang mục *Skipped* dù chúng đến từ cùng một lượt quét.
+**Lọc phải xong trước khi tải bất cứ gì**, và nó lọc theo **loại trừ**, không theo khớp chính xác.
+
+> **Bẫy thứ hai đã sập.** Bản đầu đòi `Category -eq 'Driver'` và trên máy thật nó **bỏ qua cả 12/12
+> package**. Lý do: `Category` của LCU là ***nhóm thiết bị*** — `Audio`, `Chipset`,
+> `Networking: LAN (Ethernet)`, `Motherboard Devices` — **không phải loại update**. Manh mối vốn nằm
+> sẵn trong tài liệu Lenovo: chỗ duy nhất họ dùng `Category` là `Group-Object -Property Category`,
+> tức để nhóm theo thiết bị.
+
+`Get-LnvUpdate` vốn đã chỉ trả package **cần và phù hợp**, mà trên máy client thì gần như toàn bộ là
+driver. Nên đảo lại: **gọi tên thứ không phải driver, còn lại cài hết.**
+
+| Loại trừ | Khớp trên `Category` + `Title` |
+|---|---|
+| BIOS/UEFI | `\b(bios\|uefi)\b` |
+| firmware | `\bfirmware\b` — bắt được cả dock và Management Engine firmware |
+| application | `\b(vantage\|application)\b` |
+
+Danh sách này **cố ý hẹp**. Loại nhầm một driver thật chính là lỗi vừa xảy ra, nên một chữ như
+`utility` — vốn cũng xuất hiện trong tên driver thật — **không** nằm trong danh sách. Nếu module có
+trường `Type`/`PackageType` mang giá trị nhận ra được thì nó cũng **chỉ dùng để loại trừ**, không
+bao giờ dùng làm điều kiện nhận.
+
+Tầng thứ hai vẫn là `Installer.Unattended` — installer tương tác sẽ đứng chờ một cú bấm không ai đưa
+và treo cả lượt chạy.
+
+Và nếu **mọi** package đều bị giữ lại, tool in ra `[NOTHING TO DO]` kèm **bảng các Category nó thấy**
+thay vì báo "không có gì cần cập nhật" — chính cách nói dối đó đã khiến 12 driver âm thầm không được
+cài.
 
 > **Bẫy đã sập một lần.** Bước scan từng viết `Get-LnvUpdate -ErrorAction Stop`, và nó **tự thoát
 > giữa chừng mà không trả về gì**. LCU đối chiếu *từng* package trong catalogue với máy; một package

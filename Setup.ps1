@@ -2348,19 +2348,49 @@ function Invoke-DellCommandUpdate {
 #     Global package.
 $Script:LcuModule = 'Lenovo.Client.Update'
 
-function Get-LnvPackageKind {
-    # LCU's own docs describe the package kind as Category in most places and as
-    # Type in one example, and the spec is explicit that this must not be
-    # hard-coded off a single sample. Both are read, Category first, and the
-    # field that actually carried the value is returned alongside it so a run can
-    # confirm what the provisioned module version does rather than assume it.
+# What this tool holds back. Everything else Get-LnvUpdate returns is installed.
+#
+# The first version asked for Category -eq 'Driver' and skipped all twelve
+# packages on a real machine, because LCU's Category is the *device* category the
+# package belongs to - "Audio", "Chipset", "Networking: LAN (Ethernet)" - not the
+# kind of update it is. Lenovo's own docs only ever use it to group by device,
+# which is the clue that was there to be read.
+#
+# Get-LnvUpdate already returns nothing but needed and applicable packages, and
+# on a client machine that is overwhelmingly drivers. So the test is inverted:
+# name what is not a driver, install the rest. Kept deliberately narrow - wrongly
+# excluding a real driver is the failure this replaces, so a word like "utility"
+# that also appears in genuine driver titles is not on the list.
+$Script:LnvExcluded = @(
+    @{ Label = "BIOS/UEFI";   Pattern = '(?i)\b(bios|uefi)\b' },
+    @{ Label = "firmware";    Pattern = '(?i)\bfirmware\b' },
+    @{ Label = "application"; Pattern = '(?i)\b(vantage|application)\b' }
+)
+
+function Get-LnvExclusionReason {
+    # Why this package is not a driver update, or "" when it is one.
+    #
+    # A kind field is used when the module actually provides one carrying a
+    # recognisable update type - but only ever to exclude, never to include.
+    # Requiring it to say "Driver" is exactly what broke.
     param([object]$Package)
-    foreach ($field in 'Category', 'Type') {
+
+    foreach ($field in 'Type', 'PackageType') {
         $value = $null
-        try { $value = $Package.$field } catch { }
-        if ($value) { return @{ Field = $field; Value = "$value" } }
+        try { $value = "$($Package.$field)" } catch { }
+        if ($value -match '(?i)^(bios|uefi)$')      { return "BIOS/UEFI" }
+        if ($value -match '(?i)^firmware$')         { return "firmware" }
+        if ($value -match '(?i)^(application|app)$'){ return "application" }
     }
-    return @{ Field = ""; Value = "" }
+
+    # Category and Title are both searched: dock and Management Engine firmware
+    # sit under device categories like "Motherboard Devices" and only say
+    # "Firmware" in the title.
+    $hay = "$($Package.Category) $($Package.Title)"
+    foreach ($x in $Script:LnvExcluded) {
+        if ($hay -match $x.Pattern) { return $x.Label }
+    }
+    return ""
 }
 
 function Install-LenovoDriverPackage {
@@ -2576,38 +2606,43 @@ function Invoke-LenovoDriverUpdate {
 
     # --- Filter, before anything is downloaded. BIOS, firmware and applications
     #     do not pass here even when they arrived in the same scan result. ---
-    Write-Host "`n[3/4] Filtering to unattended driver packages..." -ForegroundColor Cyan
+    Write-Host "`n[3/4] Holding back BIOS, firmware and applications..." -ForegroundColor Cyan
     $drivers = @()
     $skipped = @()
     foreach ($pkg in $all) {
-        $kind = Get-LnvPackageKind -Package $pkg
-        if ($kind.Value -notmatch '(?i)^driver$') {
-            $skipped += @{ Pkg = $pkg; Kind = $kind.Value; Why = "not a driver" }
+        $reason = Get-LnvExclusionReason -Package $pkg
+        if ($reason) {
+            $skipped += @{ Pkg = $pkg; Why = $reason }
             continue
         }
         # Lenovo's own guidance: always filter on Installer.Unattended. An
         # interactive installer waits for input nobody is there to give and
         # hangs the run.
         if (-not $pkg.Installer.Unattended) {
-            $skipped += @{ Pkg = $pkg; Kind = $kind.Value; Why = "installer is not unattended" }
+            $skipped += @{ Pkg = $pkg; Why = "installer is not unattended" }
             continue
         }
         $drivers += $pkg
     }
 
-    $kindField = if ($all.Count -gt 0) { (Get-LnvPackageKind -Package $all[0]).Field } else { "" }
-    if ($kindField) { Write-Host "      Package kind read from the '$kindField' property." -ForegroundColor DarkGray }
-
     if ($skipped.Count -gt 0) {
-        Write-Host "`n  Skipped ($($skipped.Count)):" -ForegroundColor DarkGray
+        Write-Host "`n  Held back ($($skipped.Count)):" -ForegroundColor DarkGray
         foreach ($sk in $skipped) {
-            Write-Host ("    {0} [{1}] {2}  - {3}" -f $Script:Glyph.Skip, $sk.Kind, "$($sk.Pkg.Title)", $sk.Why) -ForegroundColor DarkGray
+            Write-Host ("    {0} {1}  [{2}]  - {3}" -f $Script:Glyph.Skip,
+                "$($sk.Pkg.Title)", "$($sk.Pkg.Category)", $sk.Why) -ForegroundColor DarkGray
         }
     }
 
     if ($drivers.Count -eq 0) {
-        Write-Host "`n[OK] No driver updates are needed on this machine." -ForegroundColor Green
-        Write-Host "     Log: $log" -ForegroundColor DarkGray
+        # Everything filtered out when the scan did find packages is worth
+        # spelling out. Reporting it as "nothing needed" is how twelve pending
+        # driver updates went quietly uninstalled once already.
+        Write-Host "`n[NOTHING TO DO] The scan returned $($all.Count) package(s) and all of them" -ForegroundColor Yellow
+        Write-Host "                were held back. Categories seen:" -ForegroundColor Yellow
+        foreach ($grp in ($all | Group-Object { "$($_.Category)" } | Sort-Object Name)) {
+            Write-Host ("                  {0} x{1}" -f $grp.Name, $grp.Count) -ForegroundColor DarkGray
+        }
+        Write-Host "                Log: $log" -ForegroundColor DarkGray
         return
     }
 
