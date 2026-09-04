@@ -1163,10 +1163,73 @@ function Install-NecessaryApps {
         Write-Host "-> Background jobs activated (Config, Disk)." -ForegroundColor Gray
     }
 
-    # Installer mode must not touch Winget: bootstrapping it would download
-    # ~200MB of appx and change the client machine without being asked. Winget
-    # is only initialized here for the explicit Winget option; Installer mode
-    # asks for consent later, and only if something actually failed.
+    # Winget is brought up to date alongside the installs rather than as its own
+    # errand. It joins $backgroundJobs, which are collected *before* the winget
+    # rescue pass at the end of this function - so the rescue never fires
+    # through a client that is being replaced underneath it.
+    #
+    # Winget mode is excluded: Initialize-Winget already owns that path there,
+    # and two things registering App Installer at once helps nobody.
+    if ($Method -eq 'Installer') {
+        $wingetFunctions = (Get-Command Get-WingetVersion, Get-WingetVersionText, Get-WingetTargetArch,
+                                        Install-WingetDependencies, Install-AppInstaller |
+            ForEach-Object { "function $($_.Name) { $($_.ScriptBlock) }" }) -join "`n"
+
+        $wingetJob = Start-Job -ArgumentList $wingetFunctions, $Script:WingetRelease -ScriptBlock {
+            param([string]$FunctionDefs, [string]$ReleaseUrl)
+            . ([scriptblock]::Create($FunctionDefs))
+            $Script:WingetRelease = $ReleaseUrl
+            $ProgressPreference = 'SilentlyContinue'
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+            $before = Get-WingetVersionText
+
+            # The version is checked before anything is fetched. Registering App
+            # Installer is a ~207MB download, and a run that already has the
+            # current client would otherwise pay it on top of the ~400MB of apps
+            # this engine is pulling at the same time.
+            $latest = ""
+            try {
+                $latest = (Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/winget-cli/releases/latest" `
+                                             -Headers @{ 'User-Agent' = 'MiniApp' } `
+                                             -TimeoutSec 20 -UseBasicParsing -ErrorAction Stop).tag_name
+            }
+            catch { }
+
+            if ($latest -and $before -ne "not installed" -and
+                $before.TrimStart('v') -eq $latest.TrimStart('v')) {
+                Write-Output "[Winget] already at ${before}: SKIPPED"
+                return
+            }
+
+            # Its progress narration is written for a console this job does not
+            # have, and the engine's progress table owns the one it would land
+            # on. Only the before/after matters here.
+            Install-AppInstaller *>&1 | Out-Null
+
+            $after = Get-WingetVersionText
+            if ($after -eq "not installed") {
+                Write-Output "[Winget] update: FAILED - winget is still unavailable"
+            }
+            elseif ($after -eq $before) {
+                # Not a failure: an unreachable GitHub API above means the check
+                # was skipped, so ending where it started is the likely case.
+                Write-Output "[Winget] unchanged at ${after}: SKIPPED"
+            }
+            else {
+                Write-Output "[Winget] $before -> $after : OK"
+            }
+        }
+        $backgroundJobs += $wingetJob
+        Write-Host "-> Winget refresh running in the background." -ForegroundColor Gray
+    }
+
+    # Initialize-Winget is the Winget option's own bootstrap, and only its.
+    # Installer mode does refresh winget - in the background job started above -
+    # but that job checks the installed version against the current release
+    # first and downloads nothing when there is nothing to gain. This path is
+    # unconditional and blocking, which is right for a mode that cannot run
+    # without winget and wrong for one that only wants it for a rescue pass.
     $wingetReady = $false
     if ($Method -eq 'Winget') {
         $wingetReady = Initialize-Winget
@@ -1970,9 +2033,13 @@ function Install-CppEnvironment {
 # Everything the CLI-TOOL window offers. Adding one is a line here plus a case
 # in the switch inside Invoke-CliTools - the numbering, the Back slot and the
 # arrow-key wrapping all size themselves off this table.
+# Update Winget is deliberately not listed. The install engine now refreshes
+# winget in the background on menu 1 and 2, so offering it here as well would
+# have a technician doing by hand what the install run already did. The tool
+# itself is kept below and is one line away from coming back:
+#     @{ Label = "Update Winget"; Desc = "..."; Action = "Winget" },
 $CliTools = @(
-    @{ Label = "Update Winget";       Desc = "Latest App Installer from GitHub, no Store needed"; Action = "Winget" },
-    @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension";   Action = "Cpp"    }
+    @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension"; Action = "Cpp" }
 )
 
 function Read-CliToolChoice {
@@ -2037,6 +2104,8 @@ function Invoke-CliTools {
 
         Clear-Host
         switch ($CliTools[$choice].Action) {
+            # Winget has no entry in the table above any more; the case stays so
+            # that putting the line back is all it takes.
             'Winget' { Update-Winget }
             'Cpp'    { Install-CppEnvironment }
             default  { Write-Host "[ERROR] Unknown tool '$($CliTools[$choice].Action)'." -ForegroundColor Red }
@@ -2686,11 +2755,12 @@ function Get-FeatureWindow {
 $ExclusiveGroups = @{
     "Optimize" = "install"
     "Install"  = "install"
-    # The whole CLI-TOOL window, not just the winget tool inside it: replacing
-    # App Installer uses -ForceApplicationShutdown and the engine's rescue pass
-    # runs through that same client, and the window is the only thing the menu
-    # process can see - the tool a separate process settles on is not visible
-    # from here to block any finer than this.
+    # Still the whole CLI-TOOL window: the C++ tool installs through winget,
+    # which the install run is refreshing in its own background job, and it
+    # pulls ~2GB while the engine is already saturating the connection. The
+    # window is also the only thing the menu process can see - which tool a
+    # separate process settles on is not visible from here, so there is nothing
+    # finer to block on.
     "CliTool"  = "install"
 }
 
