@@ -1795,6 +1795,83 @@ function Update-Winget {
     }
 }
 
+# Everything the CLI-TOOL window offers. Adding one is a line here plus a case
+# in the switch inside Invoke-CliTools - the numbering, the Back slot and the
+# arrow-key wrapping all size themselves off this table.
+$CliTools = @(
+    @{ Label = "Update Winget"; Desc = "Latest App Installer from GitHub, no Store needed"; Action = "Winget" }
+)
+
+function Read-CliToolChoice {
+    # An index into $CliTools, or -1 for Back. Same navigation as the main menu
+    # so there is nothing to learn twice.
+    $selected = 0
+    $count = $CliTools.Count
+
+    while ($true) {
+        Clear-Host
+        Write-BoxTop
+        Write-BoxCenter "CLI TOOLS" "White"
+        Write-BoxSep
+        Write-BoxLine "  Standalone utilities. Each one runs here in this window." "DarkGray"
+        Write-BoxBottom
+        Write-Host ""
+
+        for ($i = 0; $i -lt $count; $i++) {
+            $num = $i + 1
+            if ($i -eq $selected) {
+                Write-Host ("  {0} {1}. {2}" -f $Script:Glyph.Run, $num, $CliTools[$i].Label.PadRight(34)) -ForegroundColor Black -BackgroundColor Cyan
+                Write-Host ("       {0}" -f $CliTools[$i].Desc) -ForegroundColor DarkGray
+            }
+            else {
+                Write-Host ("    {0}. {1}" -f $num, $CliTools[$i].Label) -ForegroundColor White
+            }
+        }
+        Write-Host ""
+        Write-Host ("    {0}. Back" -f ($count + 1)) -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Up/Down + Enter, a number key, or Esc to close this window." -ForegroundColor DarkGray
+
+        $key = [System.Console]::ReadKey($true)
+        switch ($key.Key) {
+            'UpArrow'   { $selected = ($selected - 1 + $count) % $count }
+            'DownArrow' { $selected = ($selected + 1) % $count }
+            'Enter'     { return $selected }
+            'Escape'    { return -1 }
+            default {
+                # Digits are read off the table rather than listed one per case,
+                # so a new tool needs no key wiring - and Back keeps the slot
+                # just past the end instead of colliding with the tool that
+                # takes its old number.
+                $d = -1
+                if     ("$($key.Key)" -match '^D(\d)$')      { $d = [int]$Matches[1] }
+                elseif ("$($key.Key)" -match '^NumPad(\d)$') { $d = [int]$Matches[1] }
+                if ($d -ge 1 -and $d -le $count)  { return ($d - 1) }
+                if ($d -eq ($count + 1))          { return -1 }
+            }
+        }
+    }
+}
+
+function Invoke-CliTools {
+    # The CLI-TOOL window. Its tools run inline rather than each opening a window
+    # of their own: this window already is the one that was asked for, and
+    # finishing a tool drops back to the list so the next can be picked without
+    # a trip through the main menu.
+    while ($true) {
+        $choice = Read-CliToolChoice
+        if ($choice -lt 0) { return }
+
+        Clear-Host
+        switch ($CliTools[$choice].Action) {
+            'Winget' { Update-Winget }
+            default  { Write-Host "[ERROR] Unknown tool '$($CliTools[$choice].Action)'." -ForegroundColor Red }
+        }
+        Write-Host "`nPress any key to return to the tool list..." -ForegroundColor Gray
+        [System.Console]::ReadKey($true) | Out-Null
+    }
+}
+
 function Invoke-Debloatware {
     Write-Host "`n[System] Launching Win11Debloat (silent default profile)..." -ForegroundColor Cyan
     try {
@@ -2190,7 +2267,7 @@ $MenuOptions = @(
     @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel";  Action = "Install"  },
     @{ Label = "System Information";       Desc = "Hardware info in a GUI window + build info.exe";   Action = "Info"     },
     @{ Label = "Debloat Windows";          Desc = "Remove bloatware (Win11Debloat defaults)";         Action = "Debloat"  },
-    @{ Label = "Update Winget";            Desc = "Latest App Installer from GitHub, no Store needed"; Action = "Winget"   },
+    @{ Label = "CLI-TOOL";                 Desc = "Command-line utilities (Winget updater, more later)"; Action = "CliTool"  },
     @{ Label = "Exit";                     Desc = "Close the tool";                                   Action = ""         }
 )
 
@@ -2350,7 +2427,7 @@ function Show-Menu {
         }
     }
     Write-Host ""
-    Write-Host "  Up/Down + Enter, a number key, or A/S/I/D/W/Q to run directly." -ForegroundColor DarkGray
+    Write-Host "  Up/Down + Enter, a number key, or A/S/I/D/C/Q to run directly." -ForegroundColor DarkGray
     Write-Host "  Each item opens its own window - this menu stays usable." -ForegroundColor DarkGray
 }
 
@@ -2390,7 +2467,7 @@ function Read-MenuChoice {
             'S'         { return 1 }
             'I'         { return 2 }
             'D'         { return 3 }
-            'W'         { return 4 }
+            'C'         { return 4 }
             'Q'         { return 5 }
         }
     }
@@ -2435,10 +2512,12 @@ function Get-FeatureWindow {
 $ExclusiveGroups = @{
     "Optimize" = "install"
     "Install"  = "install"
-    # Replacing App Installer uses -ForceApplicationShutdown, and the engine's
-    # winget rescue pass shoots through the same client - swapping it out from
-    # under a run already in progress is asking for it.
-    "Winget"   = "install"
+    # The whole CLI-TOOL window, not just the winget tool inside it: replacing
+    # App Installer uses -ForceApplicationShutdown and the engine's rescue pass
+    # runs through that same client, and the window is the only thing the menu
+    # process can see - the tool a separate process settles on is not visible
+    # from here to block any finer than this.
+    "CliTool"  = "install"
 }
 
 function Get-BlockingWindow {
@@ -2515,7 +2594,7 @@ if ($MiniAppAction) {
         'Install'  { Install-NecessaryApps -Method 'Installer' }
         'Info'     { Show-SystemInfo }
         'Debloat'  { Invoke-Debloatware }
-        'Winget'   { Update-Winget }
+        'CliTool'  { Invoke-CliTools }
         default    { Write-Host "[ERROR] Unknown action '$MiniAppAction'." -ForegroundColor Red }
     }
     exit
