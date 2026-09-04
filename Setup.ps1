@@ -2650,9 +2650,15 @@ function Invoke-LenovoDriverUpdate {
     foreach ($d in $drivers) {
         $size = if ($d.FileSize) { "{0:N1} MB" -f ($d.FileSize / 1MB) } else { "size unknown" }
         Write-Host ("    {0} {1}" -f $Script:Glyph.Run, "$($d.Title)") -ForegroundColor Gray
-        Write-Host ("      {0} · v{1} · {2} · {3} · {4} · applicable={5} · unattended={6}" -f
+        # IsInstalled is shown alongside IsApplicable because it is what settles
+        # what this tool actually does. LCU's default returns "needed" packages -
+        # applicable and not yet installed - and a Lenovo package is a specific
+        # version, so an older driver already on the machine still counts as not
+        # installed and shows up here. Printing the flag means a real run
+        # confirms that rather than leaving it to be argued from documentation.
+        Write-Host ("      {0} · v{1} · {2} · {3} · {4} · applicable={5} · installed={6} · unattended={7}" -f
             "$($d.PackageID)", "$($d.Version)", "$($d.ReleaseDate)", "$($d.Severity)",
-            $size, "$($d.IsApplicable)", "$($d.Installer.Unattended)") -ForegroundColor DarkGray
+            $size, "$($d.IsApplicable)", "$($d.IsInstalled)", "$($d.Installer.Unattended)") -ForegroundColor DarkGray
     }
 
     # --- Install. ShouldProcess owns the confirmation; nothing reaches
