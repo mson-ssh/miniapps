@@ -2524,6 +2524,9 @@ function Invoke-LenovoDriverUpdate {
     $work  = "$env:TEMP\MiniApp\Lenovo"
     $cache = Join-Path $work "cache"
     $log   = Join-Path $work "lcu-scan.log"
+    # Declared here rather than in step 3: step 2 now reports it too, and a path
+    # printed before it is assigned is an empty line in an error message.
+    $shapeFile = Join-Path $work "package-shape.txt"
     foreach ($d in @($work, $cache)) { if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null } }
 
     # --- Preflight. Every failure names the one condition that stopped it, and
@@ -2626,19 +2629,71 @@ function Invoke-LenovoDriverUpdate {
     # cannot be resolved or signature-checked raises a NON-terminating error -
     # which Stop promoted into an exception, throwing away every result already
     # gathered. Errors are collected instead and weighed against what came back.
+    # LCU writes console chatter to the SUCCESS stream, not just to the host. A
+    # real run captured "Logging to: <path>" followed by "-ForegroundColor" and
+    # "Cyan" as three separate string outputs - fragments of a Write-Host inside
+    # the module that its own parser split apart. Those landed in $all alongside
+    # nothing else, and the twelve "packages" the scan reported were twelve lines
+    # of that text.
+    #
+    # Text is therefore separated from packages at the point of capture. This is
+    # what should have been here from the start: it handles a result that is part
+    # chatter and part packages, which "retry if everything is a string" never
+    # could.
+    $chatter = @()
     $all     = @()
     $scanErr = $null
     $fatal   = $null
+    $raw     = @()
     try {
-        $all = @(Get-LnvUpdate -LogPath $log -ErrorVariable scanErr -ErrorAction SilentlyContinue)
+        $raw = @(Get-LnvUpdate -LogPath $log -ErrorVariable scanErr -ErrorAction SilentlyContinue)
     }
     catch {
         # The log is a nicety; the scan is the point. If writing it is what broke,
         # the scan is worth one more try without it.
         Write-Host "      Scan with logging failed - retrying without a log file..." -ForegroundColor Yellow
         Write-Host "      ($($_.Exception.Message))" -ForegroundColor DarkGray
-        try { $all = @(Get-LnvUpdate -ErrorVariable scanErr -ErrorAction SilentlyContinue) }
+        try { $raw = @(Get-LnvUpdate -ErrorVariable scanErr -ErrorAction SilentlyContinue) }
         catch { $fatal = $_ }
+    }
+
+    $chatter = @($raw | Where-Object { $_ -is [string] })
+    $all     = @($raw | Where-Object { $_ -isnot [string] })
+    if ($chatter.Count -gt 0) {
+        Write-Host "      Ignored $($chatter.Count) line(s) of console text mixed into the results." -ForegroundColor DarkGray
+    }
+
+    # Written here, not further down, because the errors below quote its path -
+    # and a message pointing at a file that was never created is worse than no
+    # message. It records $raw, everything the scan emitted, rather than the
+    # filtered objects: the run that needs this file most is the one where only
+    # text came back and the object list is empty.
+    if ($raw.Count -gt 0) {
+        $typeName = try { $raw[0].GetType().FullName } catch { "(type unreadable)" }
+        Write-Host "      First item  : $typeName" -ForegroundColor DarkGray
+        try {
+            $dump = @()
+            $dump += "Emitted total : $($raw.Count)"
+            $dump += "Package objects: $($all.Count)"
+            $dump += "Text lines     : $($chatter.Count)"
+            $dump += "First item type: $typeName"
+            $dump += ""
+            # Raw values first. Format-List on a String prints only its Length,
+            # which is what the previous dump reported - "System.String, Length
+            # 75" and not one of those 75 characters.
+            $dump += "--- everything emitted, as text ---"
+            foreach ($item in $raw) { $dump += "  $item" }
+            if ($all.Count -gt 0) {
+                $dump += ""
+                $dump += "--- first package object, every property ---"
+                $dump += ($all[0] | Format-List * -Force | Out-String)
+                $dump += "--- its Installer ---"
+                $dump += ($all[0].Installer | Format-List * -Force | Out-String)
+            }
+            $dump | Set-Content -LiteralPath $shapeFile -Encoding UTF8 -ErrorAction Stop
+            Write-Host "      Full output : $shapeFile" -ForegroundColor Yellow
+        }
+        catch { }
     }
 
     # A run on a real machine came back with twelve System.String values instead
@@ -2647,31 +2702,26 @@ function Invoke-LenovoDriverUpdate {
     # Save-LnvUpdate -Package would reject them, so the whole run was quietly
     # working on text. Detected here and retried without the log, since the
     # packages matter and the log does not.
-    if ($all.Count -gt 0 -and ($all | Where-Object { $_ -isnot [string] }).Count -eq 0) {
-        Write-Host "      The scan returned text, not packages - retrying without -LogPath..." -ForegroundColor Yellow
+    if ($all.Count -eq 0 -and $chatter.Count -gt 0) {
+        # Only text came back. -LogPath is the parameter that produced the
+        # "Logging to:" line, so it is worth one attempt without it.
+        Write-Host "      No package objects, only text - retrying without -LogPath..." -ForegroundColor Yellow
         # Printed here, on the screen already being watched, rather than left in
         # a file to be fetched. Knowing that text came back says nothing; knowing
         # what it says is the whole diagnosis, and the last round cost a run
         # because the dump recorded a length and not a single character of it.
         Write-Host "      What came back:" -ForegroundColor DarkGray
-        foreach ($t in @($all | Select-Object -First 3)) { Write-Host "        | $t" -ForegroundColor DarkGray }
-        $withLog = $all
+        foreach ($t in @($chatter | Select-Object -First 3)) { Write-Host "        | $t" -ForegroundColor DarkGray }
 
-        try { $all = @(Get-LnvUpdate -ErrorVariable scanErr -ErrorAction SilentlyContinue) }
+        try { $raw = @(Get-LnvUpdate -ErrorVariable scanErr -ErrorAction SilentlyContinue) }
         catch { $fatal = $_ }
 
-        # Say what the retry actually achieved. "Retrying" on its own leaves the
-        # next question unanswered, which is how this took another round.
-        $retryType = if ($all.Count -gt 0) { try { $all[0].GetType().Name } catch { "?" } } else { "nothing" }
-        Write-Host ("      Retry returned {0} item(s), type {1}." -f $all.Count, $retryType) -ForegroundColor DarkGray
-
-        # A retry that returns nothing is worse than the text: the run would go
-        # on to announce a machine with no updates, when the logged attempt had
-        # just found twelve. The text is kept so the stop below can show it.
-        if ($all.Count -eq 0) {
-            Write-Host "      Retry found nothing - keeping the first result so it can be shown." -ForegroundColor Yellow
-            $all = $withLog
-        }
+        $retryChatter = @($raw | Where-Object { $_ -is [string] })
+        $retryPkgs    = @($raw | Where-Object { $_ -isnot [string] })
+        Write-Host ("      Retry: {0} package object(s), {1} line(s) of text." -f
+            $retryPkgs.Count, $retryChatter.Count) -ForegroundColor DarkGray
+        if ($retryPkgs.Count -gt 0) { $all = $retryPkgs }
+        else { $chatter = if ($retryChatter.Count -gt 0) { $retryChatter } else { $chatter } }
     }
 
     if ($fatal) {
@@ -2703,6 +2753,18 @@ function Invoke-LenovoDriverUpdate {
             Write-Host "        Log: $log" -ForegroundColor DarkGray
             return
         }
+        # Text but no packages is not a clean machine either. The module talked
+        # and returned nothing, which says the scan did not work - and announcing
+        # "no updates" over that is the same quiet wrong answer.
+        if ($chatter.Count -gt 0) {
+            Write-Host "`n[ERROR] The scan produced console output but no update packages." -ForegroundColor Red
+            Write-Host "        That is not the same as having nothing to update, so this stops here." -ForegroundColor DarkGray
+            Write-Host "        What it printed:" -ForegroundColor DarkGray
+            foreach ($t in @($chatter | Select-Object -First 5)) { Write-Host "          | $t" -ForegroundColor DarkGray }
+            Write-Host "        Full output: $shapeFile" -ForegroundColor Yellow
+            Write-Host "        Log: $log" -ForegroundColor DarkGray
+            return
+        }
         Write-Host "`n[OK] The scan found no applicable updates for this machine." -ForegroundColor Green
         Write-Host "     Log: $log" -ForegroundColor DarkGray
         return
@@ -2712,60 +2774,6 @@ function Invoke-LenovoDriverUpdate {
     # --- Filter, before anything is downloaded. BIOS, firmware and applications
     #     do not pass here even when they arrived in the same scan result. ---
     Write-Host "`n[3/4] Holding back BIOS, firmware and applications..." -ForegroundColor Cyan
-
-    # Every wrong turn this tool has taken was a guess about this object made
-    # from Lenovo's documentation - Category holding device names, Unattended not
-    # being there, and then no readable property at all. So the first package is
-    # written out in full, type and every value, to a file that can just be sent
-    # on. Guessing from docs has been tried and does not work.
-    $shapeFile = Join-Path $work "package-shape.txt"
-    if ($all.Count -gt 0) {
-        $typeName = try { $all[0].GetType().FullName } catch { "(type unreadable)" }
-        $pkgProps = try {
-            (($all[0] | Get-Member -MemberType Properties -ErrorAction Stop).Name) -join ', '
-        } catch { "(none readable)" }
-        Write-Host "      Object type : $typeName" -ForegroundColor DarkGray
-        Write-Host "      Properties  : $pkgProps" -ForegroundColor DarkGray
-        try {
-            $dump = @()
-            $dump += "Type: $typeName"
-            $dump += "Count: $($all.Count)"
-            $dump += "Properties: $pkgProps"
-            $dump += ""
-            # The raw values come first. Format-List on a String prints only its
-            # Length, which is exactly what happened on the run that mattered -
-            # the dump reported "System.String, Length 75" and never showed what
-            # those 75 characters said.
-            $dump += "--- first 5 items, as text ---"
-            foreach ($item in @($all | Select-Object -First 5)) { $dump += "  $item" }
-            $dump += ""
-            $dump += "--- first item, every property ---"
-            $dump += ($all[0] | Format-List * -Force | Out-String)
-            $dump += "--- its Installer ---"
-            $dump += ($all[0].Installer | Format-List * -Force | Out-String)
-            $dump | Set-Content -LiteralPath $shapeFile -Encoding UTF8 -ErrorAction Stop
-            Write-Host "      Full shape  : $shapeFile" -ForegroundColor Yellow
-        }
-        catch { }
-    }
-
-    # If they are still text after the retry, nothing below can mean anything:
-    # a string has no Category to filter on and Save-LnvUpdate would reject it.
-    # Stopping here is honest; carrying on would produce a confident list of
-    # log lines and offer to install them.
-    # The Count guard is not decoration: an empty array also has zero non-string
-    # items, so without it a machine with nothing to update would be reported as
-    # having returned text. An earlier return already covers the empty case, but
-    # a check that only holds because of something forty lines above is one edit
-    # away from being wrong.
-    if ($all.Count -gt 0 -and ($all | Where-Object { $_ -isnot [string] }).Count -eq 0) {
-        Write-Host "`n[ERROR] The scan returned text rather than update packages." -ForegroundColor Red
-        Write-Host "        Nothing can be filtered or installed from that, so this stops here." -ForegroundColor DarkGray
-        Write-Host "        First few lines:" -ForegroundColor DarkGray
-        foreach ($t in @($all | Select-Object -First 3)) { Write-Host "          $t" -ForegroundColor DarkGray }
-        Write-Host "        Full output: $shapeFile" -ForegroundColor Yellow
-        return
-    }
 
     $drivers = @()
     $skipped = @()
