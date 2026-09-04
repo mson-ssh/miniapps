@@ -135,14 +135,40 @@ flowchart TD
     M5 --> T1["1 · Environment for C++"]
     M5 --> T2["2 · Remove Office"]
     M5 --> T3["3 · Remove Antivirus Trial"]
-    M5 --> T4["4 · Back"]
+    M5 --> T4["4 · Dell Command Update"]
+    M5 --> T5["5 · Back"]
     T1 -.->|"xong quay lại danh sách"| M5
     T2 -.->|"xong quay lại danh sách"| M5
     T3 -.->|"xong quay lại danh sách"| M5
+    T4 -.->|"xong quay lại danh sách"| M5
 ```
 
 `Update Winget` **đã ẩn** khỏi CLI-TOOL — engine cài đặt tự làm việc đó ở nền (mục 6). Hàm và
 `case` vẫn còn, hiện lại chỉ cần chép lại một dòng đã ghi sẵn trong comment trên `$CliTools`.
+
+`Dell Command Update` cập nhật driver máy Dell. Nó đưa **winget lên bản mới trước** rồi mới xin
+package — client cũ là nguyên nhân thường gặp nhất làm `winget install` hỏng, nên sửa trước rẻ hơn
+sửa sau khi đã lỗi. Dùng chung `Test-WingetIsCurrent` với job nền của engine, một hàm duy nhất nên
+hai chỗ không thể lệch nhau.
+
+Chạy `/scan -silent` trước; **mã thoát 500 nghĩa là driver đã mới nhất** và tool dừng luôn, không
+vào bước apply. Bước apply là `/applyUpdates -updateType=driver -silent -reboot=disable`. Cố ý
+**không** truyền `-forceUpdate` — nó cài lại cả driver đang mới, mất thời gian mà không được gì.
+Đổi `-updateType=driver` thành `driver,bios,firmware` là mở rộng sang BIOS.
+
+Mã thoát của `dcu-cli` phải đọc mới phân biệt được, vì `0`, `1`, `5` và `500` **đều để máy nguyên
+trạng**:
+
+| Mã | Nghĩa |
+|---|---|
+| `0` | xong |
+| `1` | xong, **cần khởi động lại** |
+| `5` | đã có yêu cầu khởi động lại từ trước |
+| `500` | không tìm thấy update — driver đã mới nhất |
+| `2` | lỗi ứng dụng |
+
+Chỉ chạy trên máy Dell (`Win32_ComputerSystem.Manufacturer`), và **in ra tên hãng** khi từ chối để
+một chuỗi OEM lạ nhìn ra được chứ không giống lỗi.
 
 `Remove Antivirus Trial` gỡ McAfee/Norton cài sẵn theo máy mới. Nó **quét trước, in ra danh
 sách tìm được, rồi mới hỏi** — vì `McAfee` và `Norton` là pattern rộng, và người đọc được đúng tên

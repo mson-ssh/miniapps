@@ -709,6 +709,28 @@ function Get-WingetVersionText {
     try { return "$(& winget --version 2>&1)".Trim() } catch { return "not installed" }
 }
 
+function Get-WingetLatestTag {
+    # The current release tag as GitHub states it ("v1.29.290"), or "" when the
+    # API cannot be reached. Time-boxed: nothing here is worth stalling a run.
+    try {
+        return "$((Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/winget-cli/releases/latest" `
+                    -Headers @{ 'User-Agent' = 'MiniApp' } -TimeoutSec 20 -UseBasicParsing -ErrorAction Stop).tag_name)"
+    }
+    catch { return "" }
+}
+
+function Test-WingetIsCurrent {
+    # $true when the installed client already matches the current release.
+    # Absent counts as not current, and so does an unreachable API: both callers
+    # want a working winget more than they want to save the download, and the
+    # alternative is silently skipping an upgrade that was needed.
+    $local = Get-WingetVersionText
+    if ($local -eq "not installed") { return $false }
+    $latest = Get-WingetLatestTag
+    if (-not $latest) { return $false }
+    return ($local.TrimStart('v') -eq $latest.TrimStart('v'))
+}
+
 function Get-WingetTargetArch {
     # x64 / x86 / arm64, matching the folder names inside the dependency zip.
     # PROCESSOR_ARCHITECTURE reports the *process* architecture, so a 32-bit
@@ -1171,7 +1193,8 @@ function Install-NecessaryApps {
     # Winget mode is excluded: Initialize-Winget already owns that path there,
     # and two things registering App Installer at once helps nobody.
     if ($Method -eq 'Installer') {
-        $wingetFunctions = (Get-Command Get-WingetVersion, Get-WingetVersionText, Get-WingetTargetArch,
+        $wingetFunctions = (Get-Command Get-WingetVersion, Get-WingetVersionText, Get-WingetLatestTag,
+                                        Test-WingetIsCurrent, Get-WingetTargetArch,
                                         Install-WingetDependencies, Install-AppInstaller |
             ForEach-Object { "function $($_.Name) { $($_.ScriptBlock) }" }) -join "`n"
 
@@ -1187,17 +1210,9 @@ function Install-NecessaryApps {
             # The version is checked before anything is fetched. Registering App
             # Installer is a ~207MB download, and a run that already has the
             # current client would otherwise pay it on top of the ~400MB of apps
-            # this engine is pulling at the same time.
-            $latest = ""
-            try {
-                $latest = (Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/winget-cli/releases/latest" `
-                                             -Headers @{ 'User-Agent' = 'MiniApp' } `
-                                             -TimeoutSec 20 -UseBasicParsing -ErrorAction Stop).tag_name
-            }
-            catch { }
-
-            if ($latest -and $before -ne "not installed" -and
-                $before.TrimStart('v') -eq $latest.TrimStart('v')) {
+            # this engine is pulling at the same time. Same check the DCU tool
+            # makes, from the same function, so the two cannot drift apart.
+            if (Test-WingetIsCurrent) {
                 Write-Output "[Winget] already at ${before}: SKIPPED"
                 return
             }
@@ -2030,6 +2045,115 @@ function Install-CppEnvironment {
     Write-Host "   reach terminals that were already running." -ForegroundColor DarkGray
 }
 
+function Get-DcuCli {
+    # dcu-cli.exe, wherever the installer put it. The classic build lands under
+    # Program Files (x86) and the Universal one under Program Files, and which
+    # you get depends on the model - so both are checked rather than assumed.
+    foreach ($p in @("$env:ProgramFiles\Dell\CommandUpdate\dcu-cli.exe",
+                     "${env:ProgramFiles(x86)}\Dell\CommandUpdate\dcu-cli.exe")) {
+        if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+    }
+    return $null
+}
+
+function Get-DcuResultText {
+    # dcu-cli's documented exit codes. Reading them is the whole difference
+    # between "no updates were needed" and "it failed" - both leave the machine
+    # unchanged, and only the number says which happened.
+    param([int]$Code)
+    switch ($Code) {
+        0   { return @{ Ok = $true;  Text = "completed" } }
+        1   { return @{ Ok = $true;  Text = "completed - a reboot is required" } }
+        5   { return @{ Ok = $true;  Text = "a reboot was already pending before this ran" } }
+        500 { return @{ Ok = $true;  Text = "no updates found - drivers are already current" } }
+        2   { return @{ Ok = $false; Text = "unknown application error" } }
+        default { return @{ Ok = $false; Text = "exit code $Code" } }
+    }
+}
+
+function Invoke-DellCommandUpdate {
+    # Installs Dell Command Update through winget, then has it apply driver
+    # updates - without letting it restart the machine.
+    Write-Host "`n[DCU] Dell Command Update - driver updates" -ForegroundColor Magenta
+
+    # Dell only. DCU installs happily on any machine and then finds nothing,
+    # which is a long scan to sit through for an answer that was knowable up
+    # front. The manufacturer is printed rather than just refused, so an odd
+    # OEM string is visible instead of looking like a bug.
+    $vendor = try { "$((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).Manufacturer)".Trim() } catch { "" }
+    if ($vendor -notmatch '(?i)dell') {
+        Write-Host "      This machine reports its manufacturer as '$vendor'." -ForegroundColor Yellow
+        Write-Host "      Dell Command Update only serves Dell hardware - stopping here." -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "      Manufacturer: $vendor" -ForegroundColor DarkGray
+
+    # --- 1. winget first ---
+    # An out-of-date client is the usual cause of a failed install here, so it
+    # is brought current before the package is asked for rather than after the
+    # failure. Same check the install engine's background job makes.
+    Write-Host "`n[1/3] Checking winget..." -ForegroundColor Cyan
+    Write-Host "      Installed: $(Get-WingetVersionText)" -ForegroundColor DarkGray
+    if (Test-WingetIsCurrent) {
+        Write-Host "      Already current." -ForegroundColor Gray
+    }
+    else {
+        Write-Host "      Out of date or missing - updating it first (~207MB)..." -ForegroundColor Yellow
+        Install-AppInstaller
+        Write-Host "      Now: $(Get-WingetVersionText)" -ForegroundColor Gray
+    }
+    if ($null -eq (Get-WingetVersion)) {
+        Write-Host "`n[ERROR] Winget is still unavailable, so DCU cannot be installed." -ForegroundColor Red
+        return
+    }
+
+    # --- 2. the tool ---
+    Write-Host "`n[2/3] Installing Dell Command Update..." -ForegroundColor Cyan
+    if (-not (Invoke-WingetInstall -Id 'Dell.CommandUpdate')) {
+        Write-Host "      winget could not install it." -ForegroundColor Yellow
+    }
+
+    $dcu = Get-DcuCli
+    if (-not $dcu) {
+        Write-Host "`n[ERROR] dcu-cli.exe is not on this machine after the install." -ForegroundColor Red
+        Write-Host "        Some models ship the Universal build instead - try" -ForegroundColor DarkGray
+        Write-Host "        Dell.CommandUpdate.Universal by hand and run this again." -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "      Using $dcu" -ForegroundColor DarkGray
+
+    # --- 3. scan, then apply ---
+    # Called with & rather than Start-Process so dcu-cli's own progress reaches
+    # the console: applying drivers runs for many minutes and a hidden window
+    # reads as a hang.
+    Write-Host "`n[3/3] Scanning for driver updates..." -ForegroundColor Cyan
+    & $dcu /scan -silent
+    $scan = Get-DcuResultText -Code $LASTEXITCODE
+    Write-Host ("      Scan: {0}" -f $scan.Text) -ForegroundColor DarkGray
+    if ($LASTEXITCODE -eq 500) {
+        Write-Host "`n[OK] Nothing to install - this machine's drivers are already current." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "`n      Applying driver updates. This takes a while." -ForegroundColor Cyan
+    # -reboot=disable is the documented way to keep it from restarting.
+    # -forceUpdate is deliberately NOT passed: it reinstalls drivers that are
+    # already current, which is a long detour for no gain on a machine being set
+    # up. -updateType=driver keeps it to drivers, as asked; adding
+    # ",bios,firmware" to that one string widens it.
+    & $dcu /applyUpdates -updateType=driver -silent -reboot=disable
+    $apply = Get-DcuResultText -Code $LASTEXITCODE
+
+    Write-Host "`n[DCU Results]" -ForegroundColor Cyan
+    if ($apply.Ok) {
+        Write-Host ("   {0} {1}" -f $Script:Glyph.Ok, $apply.Text) -ForegroundColor Green
+    }
+    else {
+        Write-Host ("   {0} {1}" -f $Script:Glyph.Fail, $apply.Text) -ForegroundColor Red
+    }
+    Write-Host "`n   Nothing was restarted. Reboot when you are ready." -ForegroundColor DarkGray
+}
+
 # The OEM antivirus trials this tool knows to look for. Matched against the
 # DisplayName shown in Programs and Features, so one pattern covers a vendor's
 # several SKUs - LiveSafe, Total Protection, Security Scan, 360 - instead of
@@ -2235,7 +2359,8 @@ function Invoke-RemoveAntivirusTrial {
 $CliTools = @(
     @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension";     Action = "Cpp"          },
     @{ Label = "Remove Office";       Desc = "Force-remove Office 2016-2024 and Microsoft 365";     Action = "RemoveOffice" },
-    @{ Label = "Remove Antivirus Trial"; Desc = "Uninstall pre-installed McAfee and Norton trials";  Action = "RemoveAv"     }
+    @{ Label = "Remove Antivirus Trial"; Desc = "Uninstall pre-installed McAfee and Norton trials";  Action = "RemoveAv"     },
+    @{ Label = "Dell Command Update"; Desc = "Install DCU, then update drivers without rebooting";    Action = "Dcu"          }
 )
 
 function Read-CliToolChoice {
@@ -2306,6 +2431,7 @@ function Invoke-CliTools {
             'Cpp'    { Install-CppEnvironment }
             'RemoveOffice' { Invoke-RemoveOffice }
             'RemoveAv'     { Invoke-RemoveAntivirusTrial }
+            'Dcu'          { Invoke-DellCommandUpdate }
             default  { Write-Host "[ERROR] Unknown tool '$($CliTools[$choice].Action)'." -ForegroundColor Red }
         }
         Write-Host "`nPress any key to return to the tool list..." -ForegroundColor Gray
