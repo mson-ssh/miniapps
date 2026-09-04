@@ -174,6 +174,22 @@ package cần và phù hợp) → lọc → báo cáo → xác nhận → `Save-
 `Installer.Unattended` phải đúng — installer tương tác sẽ đứng chờ một cú bấm không ai đưa và treo
 cả lượt chạy. BIOS/firmware/application bị đẩy sang mục *Skipped* dù chúng đến từ cùng một lượt quét.
 
+> **Bẫy đã sập một lần.** Bước scan từng viết `Get-LnvUpdate -ErrorAction Stop`, và nó **tự thoát
+> giữa chừng mà không trả về gì**. LCU đối chiếu *từng* package trong catalogue với máy; một package
+> không phân giải hoặc không kiểm được chữ ký sinh lỗi **non-terminating**, mà `Stop` biến cái đầu
+> tiên trong số đó thành exception — vứt bỏ toàn bộ kết quả đã thu. Giờ lỗi được **gom lại** và cân
+> với thứ trả về, cho ra ba kết luận khác nhau:
+>
+> | Trả về | Có lỗi? | Kết luận |
+> |---|---|---|
+> | có package | có | chạy tiếp, in ra các lỗi (tối đa 5 dòng rồi tóm tắt) |
+> | rỗng | có | **FAILURE** — không phải "máy đã mới nhất" |
+> | rỗng | không | máy thật sự không có gì cần cập nhật |
+>
+> Phân biệt hàng 2 với hàng 3 mới là chỗ quan trọng: gọi một lượt scan hỏng là "máy sạch" sẽ giao
+> laptop cho khách với driver cũ mà không ai biết. `Save-LnvUpdate` và `Install-LnvUpdate` cũng đã
+> sửa y hệt, và nếu tải thiếu package thì **không cài gì cả** thay vì cài một phần.
+
 Hai chỗ đáng chú ý:
 
 - **`ShouldProcess` là thật, không phải trang trí.** Phần đụng vào máy tách hẳn thành

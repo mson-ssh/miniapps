@@ -2383,16 +2383,35 @@ function Install-LenovoDriverPackage {
     # Downloaded first, and the download result is checked: installing a package
     # whose transfer failed would turn a clear download error into a confusing
     # install error.
-    $saved = @(Save-LnvUpdate -Package $Package -Path $CachePath -ShowProgress -ErrorAction Stop)
+    # Same reasoning as the scan: one package raising a non-terminating error
+    # must not discard the results for the others. Their own Status field is what
+    # says whether each one worked.
+    $saveErr = $null
+    $saved = @(Save-LnvUpdate -Package $Package -Path $CachePath -ShowProgress `
+                              -ErrorVariable saveErr -ErrorAction SilentlyContinue)
+    foreach ($e in @($saveErr)) {
+        Write-Host ("   {0} download: {1}" -f $Script:Glyph.Fail, $e.Exception.Message) -ForegroundColor Red
+    }
     $badSave = @($saved | Where-Object { "$($_.Status)" -eq 'Failed' })
-    if ($badSave.Count -gt 0) {
-        foreach ($b in $badSave) {
-            Write-Host ("   {0} download failed: {1} - {2}" -f $Script:Glyph.Fail, $b.PackageID, $b.Message) -ForegroundColor Red
-        }
+    foreach ($b in $badSave) {
+        Write-Host ("   {0} download failed: {1} - {2}" -f $Script:Glyph.Fail, $b.PackageID, $b.Message) -ForegroundColor Red
+    }
+    # Installing a package whose transfer failed turns a clear download error
+    # into a confusing install error, so nothing proceeds unless everything
+    # asked for actually arrived.
+    if ($badSave.Count -gt 0 -or $saved.Count -lt $Package.Count) {
+        Write-Host ("   {0} {1} of {2} package(s) downloaded - not installing." -f
+            $Script:Glyph.Fail, ($saved.Count - $badSave.Count), $Package.Count) -ForegroundColor Red
         return $null
     }
 
-    return @(Install-LnvUpdate -Package $Package -Path $CachePath -ExportToWMI -ErrorAction Stop)
+    $instErr = $null
+    $results = @(Install-LnvUpdate -Package $Package -Path $CachePath -ExportToWMI `
+                                   -ErrorVariable instErr -ErrorAction SilentlyContinue)
+    foreach ($e in @($instErr)) {
+        Write-Host ("   {0} install: {1}" -f $Script:Glyph.Fail, $e.Exception.Message) -ForegroundColor Red
+    }
+    return $results
 }
 
 function Invoke-LenovoDriverUpdate {
@@ -2499,11 +2518,58 @@ function Invoke-LenovoDriverUpdate {
     #     packages that must never reach the install list. No -Model either -
     #     forcing one is how a China-SKU machine ends up with a Global package.
     Write-Host "`n[2/4] Scanning (this uses the network and can take a while)..." -ForegroundColor Cyan
-    $all = $null
-    try { $all = @(Get-LnvUpdate -LogPath $log -ErrorAction Stop) }
+
+    # -ErrorAction Stop was wrong here and is what made this step give up. LCU
+    # evaluates every package in the catalogue against the machine, and one that
+    # cannot be resolved or signature-checked raises a NON-terminating error -
+    # which Stop promoted into an exception, throwing away every result already
+    # gathered. Errors are collected instead and weighed against what came back.
+    $all     = @()
+    $scanErr = $null
+    $fatal   = $null
+    try {
+        $all = @(Get-LnvUpdate -LogPath $log -ErrorVariable scanErr -ErrorAction SilentlyContinue)
+    }
     catch {
-        Write-Host "`n[ERROR] The scan failed: $($_.Exception.Message)" -ForegroundColor Red
+        # The log is a nicety; the scan is the point. If writing it is what broke,
+        # the scan is worth one more try without it.
+        Write-Host "      Scan with logging failed - retrying without a log file..." -ForegroundColor Yellow
+        Write-Host "      ($($_.Exception.Message))" -ForegroundColor DarkGray
+        try { $all = @(Get-LnvUpdate -ErrorVariable scanErr -ErrorAction SilentlyContinue) }
+        catch { $fatal = $_ }
+    }
+
+    if ($fatal) {
+        Write-Host "`n[ERROR] The scan could not run at all." -ForegroundColor Red
+        Write-Host "        $($fatal.Exception.Message)" -ForegroundColor DarkGray
         Write-Host "        Log: $log" -ForegroundColor DarkGray
+        return
+    }
+
+    # Grumbles on the way do not undo a scan that returned packages, so they are
+    # shown and stepped over. Printed in full because a one-line mystery is what
+    # made the old failure impossible to act on.
+    $errCount = @($scanErr).Count
+    if ($errCount -gt 0) {
+        Write-Host "      $errCount non-fatal issue(s) during the scan:" -ForegroundColor Yellow
+        foreach ($e in @($scanErr | Select-Object -First 5)) {
+            Write-Host "        $($e.Exception.Message)" -ForegroundColor DarkGray
+        }
+        if ($errCount -gt 5) { Write-Host "        ...and $($errCount - 5) more - see $log" -ForegroundColor DarkGray }
+    }
+
+    if ($all.Count -eq 0) {
+        # Nothing back AND complaints is a failed scan, not a clean machine.
+        # Calling it clean is the kind of quiet wrong answer that gets a laptop
+        # handed over with stale drivers.
+        if ($errCount -gt 0) {
+            Write-Host "`n[ERROR] The scan returned nothing and reported errors - that is a failure," -ForegroundColor Red
+            Write-Host "        not a machine with nothing to update." -ForegroundColor DarkGray
+            Write-Host "        Log: $log" -ForegroundColor DarkGray
+            return
+        }
+        Write-Host "`n[OK] The scan found no applicable updates for this machine." -ForegroundColor Green
+        Write-Host "     Log: $log" -ForegroundColor DarkGray
         return
     }
     Write-Host "      $($all.Count) applicable package(s) returned." -ForegroundColor DarkGray
