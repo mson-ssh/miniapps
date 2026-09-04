@@ -2649,8 +2649,29 @@ function Invoke-LenovoDriverUpdate {
     # packages matter and the log does not.
     if ($all.Count -gt 0 -and ($all | Where-Object { $_ -isnot [string] }).Count -eq 0) {
         Write-Host "      The scan returned text, not packages - retrying without -LogPath..." -ForegroundColor Yellow
+        # Printed here, on the screen already being watched, rather than left in
+        # a file to be fetched. Knowing that text came back says nothing; knowing
+        # what it says is the whole diagnosis, and the last round cost a run
+        # because the dump recorded a length and not a single character of it.
+        Write-Host "      What came back:" -ForegroundColor DarkGray
+        foreach ($t in @($all | Select-Object -First 3)) { Write-Host "        | $t" -ForegroundColor DarkGray }
+        $withLog = $all
+
         try { $all = @(Get-LnvUpdate -ErrorVariable scanErr -ErrorAction SilentlyContinue) }
         catch { $fatal = $_ }
+
+        # Say what the retry actually achieved. "Retrying" on its own leaves the
+        # next question unanswered, which is how this took another round.
+        $retryType = if ($all.Count -gt 0) { try { $all[0].GetType().Name } catch { "?" } } else { "nothing" }
+        Write-Host ("      Retry returned {0} item(s), type {1}." -f $all.Count, $retryType) -ForegroundColor DarkGray
+
+        # A retry that returns nothing is worse than the text: the run would go
+        # on to announce a machine with no updates, when the logged attempt had
+        # just found twelve. The text is kept so the stop below can show it.
+        if ($all.Count -eq 0) {
+            Write-Host "      Retry found nothing - keeping the first result so it can be shown." -ForegroundColor Yellow
+            $all = $withLog
+        }
     }
 
     if ($fatal) {
