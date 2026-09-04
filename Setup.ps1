@@ -2039,7 +2039,8 @@ function Install-CppEnvironment {
 # itself is kept below and is one line away from coming back:
 #     @{ Label = "Update Winget"; Desc = "..."; Action = "Winget" },
 $CliTools = @(
-    @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension"; Action = "Cpp" }
+    @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension";     Action = "Cpp"          },
+    @{ Label = "Remove Office";       Desc = "Force-remove Office 2016-2024 and Microsoft 365";     Action = "RemoveOffice" }
 )
 
 function Read-CliToolChoice {
@@ -2108,6 +2109,7 @@ function Invoke-CliTools {
             # that putting the line back is all it takes.
             'Winget' { Update-Winget }
             'Cpp'    { Install-CppEnvironment }
+            'RemoveOffice' { Invoke-RemoveOffice }
             default  { Write-Host "[ERROR] Unknown tool '$($CliTools[$choice].Action)'." -ForegroundColor Red }
         }
         Write-Host "`nPress any key to return to the tool list..." -ForegroundColor Gray
@@ -2129,7 +2131,23 @@ function Invoke-Debloatware {
 function Invoke-RemoveOffice {
     # Runs the exact same logic as the background job that fires when WPS is
     # chosen (see $RemoveOfficeScript) - invoked directly here, in the
-    # foreground, so it can be tested/run on its own with live output.
+    # foreground, so its output can be watched line by line.
+    #
+    # The job path takes its consent from the licence question: answering "no
+    # licence" is what schedules it. Reached from the tool list there is no such
+    # answer behind it, and uninstalling a licensed Office is not something to
+    # do on a mis-keyed menu item - so this path asks and the job path does not.
+    # A "yes" on a clean machine still costs nothing: the scriptblock scans
+    # first and returns when it finds no Office to remove.
+    Write-Host "`n[Office] Force-remove Office 2016-2024 and Microsoft 365" -ForegroundColor Magenta
+    Write-Host "         Every Office product found is uninstalled, licensed or not." -ForegroundColor DarkGray
+    Write-Host "`n  Continue? [y/N] " -NoNewline -ForegroundColor Yellow
+    if ("$([System.Console]::ReadKey($false).KeyChar)" -notmatch '^[yY]$') {
+        Write-Host "`n[Cancelled] Office was left alone." -ForegroundColor Yellow
+        return
+    }
+    Write-Host ""
+
     Write-Host "`n[System] Force-removing Office (2016-2024 + Microsoft 365)..." -ForegroundColor Magenta
     & $RemoveOfficeScript | ForEach-Object {
         $color = if ($_ -match 'FAILED') { 'Red' }
@@ -2510,7 +2528,7 @@ $MenuOptions = @(
     @{ Label = "Install Apps (Installer)"; Desc = "Download from direct links, install in parallel";  Action = "Install"  },
     @{ Label = "System Information";       Desc = "Hardware info in a GUI window + build info.exe";   Action = "Info"     },
     @{ Label = "Debloat Windows";          Desc = "Remove bloatware (Win11Debloat defaults)";         Action = "Debloat"  },
-    @{ Label = "CLI-TOOL";                 Desc = "Command-line utilities (C++ dev environment)";        Action = "CliTool"  },
+    @{ Label = "CLI-TOOL";                 Desc = "Standalone utilities, listed in their own window";     Action = "CliTool"  },
     @{ Label = "Exit";                     Desc = "Close the tool";                                   Action = ""         }
 )
 

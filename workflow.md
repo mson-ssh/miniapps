@@ -133,12 +133,20 @@ flowchart TD
     MENU --> M6["6 · Exit"]
 
     M5 --> T1["1 · Environment for C++"]
-    M5 --> T2["2 · Back"]
+    M5 --> T2["2 · Remove Office"]
+    M5 --> T3["3 · Back"]
     T1 -.->|"chạy inline, xong quay lại danh sách"| M5
+    T2 -.->|"chạy inline, xong quay lại danh sách"| M5
 ```
 
 `Update Winget` **đã ẩn** khỏi CLI-TOOL — engine cài đặt tự làm việc đó ở nền (mục 6). Hàm và
 `case` vẫn còn, hiện lại chỉ cần chép lại một dòng đã ghi sẵn trong comment trên `$CliTools`.
+
+`Remove Office` chạy đúng `$RemoveOfficeScript` mà job WPS dùng, nhưng qua `Invoke-RemoveOffice`
+— bản foreground có thêm **một câu hỏi `[y/N]`**. Đường job lấy sự đồng ý từ câu hỏi bản quyền
+(trả lời "không có bản quyền" chính là thứ kích hoạt nó); vào từ danh sách tool thì không có câu
+trả lời nào đứng sau, nên phải hỏi. Bản thân scriptblock quét trước và thoát nếu máy không có
+Office, nên bấm nhầm `y` trên máy sạch cũng không mất gì.
 
 ---
 
