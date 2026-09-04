@@ -2397,9 +2397,17 @@ function Get-LnvField {
     # after it, which tells the reader less than saying nothing.
     param([object]$Object, [string[]]$Names)
 
+    if ($null -eq $Object) { return "" }
     foreach ($n in $Names) {
+        # Two routes, because dotted access with a variable name comes back empty
+        # on some object shapes while the PSObject property table still has the
+        # value. Cheap to try both; a whole feature has already been blocked by
+        # one of them returning nothing.
         $value = $null
         try { $value = $Object.$n } catch { }
+        if ($null -eq $value -or "$value" -eq "") {
+            try { $value = $Object.psobject.Properties[$n].Value } catch { }
+        }
         if ($null -ne $value -and "$value" -ne "") { return "$value" }
     }
     return ""
@@ -2672,19 +2680,33 @@ function Invoke-LenovoDriverUpdate {
     #     do not pass here even when they arrived in the same scan result. ---
     Write-Host "`n[3/4] Holding back BIOS, firmware and applications..." -ForegroundColor Cyan
 
-    # What the module actually hands over, printed once. Every wrong turn this
-    # tool has taken - Category holding device names, Unattended not being there
-    # - was a guess about this object made from documentation. One line of real
-    # output settles the next one without another round trip.
+    # Every wrong turn this tool has taken was a guess about this object made
+    # from Lenovo's documentation - Category holding device names, Unattended not
+    # being there, and then no readable property at all. So the first package is
+    # written out in full, type and every value, to a file that can just be sent
+    # on. Guessing from docs has been tried and does not work.
+    $shapeFile = Join-Path $work "package-shape.txt"
     if ($all.Count -gt 0) {
+        $typeName = try { $all[0].GetType().FullName } catch { "(type unreadable)" }
         $pkgProps = try {
             (($all[0] | Get-Member -MemberType Properties -ErrorAction Stop).Name) -join ', '
-        } catch { "(unreadable)" }
-        $instProps = try {
-            (($all[0].Installer | Get-Member -MemberType Properties -ErrorAction Stop).Name) -join ', '
-        } catch { "(no Installer object)" }
-        Write-Host "      Package properties : $pkgProps" -ForegroundColor DarkGray
-        Write-Host "      Installer properties: $instProps" -ForegroundColor DarkGray
+        } catch { "(none readable)" }
+        Write-Host "      Object type : $typeName" -ForegroundColor DarkGray
+        Write-Host "      Properties  : $pkgProps" -ForegroundColor DarkGray
+        try {
+            $dump = @()
+            $dump += "Type: $typeName"
+            $dump += "Count: $($all.Count)"
+            $dump += "Properties: $pkgProps"
+            $dump += ""
+            $dump += "--- first package, every property ---"
+            $dump += ($all[0] | Format-List * -Force | Out-String)
+            $dump += "--- its Installer ---"
+            $dump += ($all[0].Installer | Format-List * -Force | Out-String)
+            $dump | Set-Content -LiteralPath $shapeFile -Encoding UTF8 -ErrorAction Stop
+            Write-Host "      Full shape  : $shapeFile" -ForegroundColor Yellow
+        }
+        catch { }
     }
 
     $drivers = @()
@@ -2728,8 +2750,13 @@ function Invoke-LenovoDriverUpdate {
 
     Write-Host "`n  Driver updates found ($($drivers.Count)):" -ForegroundColor Yellow
     foreach ($d in $drivers) {
-        Write-Host ("    {0} {1}" -f $Script:Glyph.Run,
-            (Get-LnvField $d @('Title', 'Name', 'PackageName'))) -ForegroundColor Gray
+        # A row must never come out blank. If none of the likely names carry a
+        # title, whatever the object renders as is better than an empty line -
+        # and a placeholder is better than nothing at all.
+        $title = Get-LnvField $d @('Title', 'Name', 'PackageName', 'DisplayName', 'Description')
+        if (-not $title) { $title = "$d" }
+        if (-not $title -or $title -eq 'System.Object') { $title = "(package $($drivers.IndexOf($d) + 1) - name not readable)" }
+        Write-Host ("    {0} {1}" -f $Script:Glyph.Run, $title) -ForegroundColor Gray
 
         # Built from what is there rather than a fixed format string, so a
         # property this module spells differently costs one field instead of
