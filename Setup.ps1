@@ -1795,11 +1795,184 @@ function Update-Winget {
     }
 }
 
+# Where the MSYS2 winget package puts itself, and the toolchain folder the
+# VS Code guide has you put on PATH. Both are fixed by MSYS2.MSYS2's own
+# manifest ("--root C:\msys64"), not chosen here.
+$Script:MsysRoot   = "C:\msys64"
+$Script:MsysBinDir = "C:\msys64\ucrt64\bin"
+
+function Invoke-WingetInstall {
+    # One winget install, reported. --source winget is pinned for the reason it
+    # is pinned everywhere else in this file: without it winget resolves the id
+    # against every registered source including msstore, the one source that is
+    # certificate-pinned, and that fails with 0x8A15005E behind SSL inspection
+    # or on an old client - taking the command down over a package that never
+    # needed the Store.
+    param([string]$Id, [string[]]$ExtraArgs = @())
+
+    $wgArgs = @('install', '--id', $Id, '--source', 'winget', '--exact',
+                '--silent', '--accept-package-agreements', '--accept-source-agreements',
+                '--disable-interactivity') + $ExtraArgs
+    # -WindowStyle Hidden, not -NoNewWindow: the latter hands back a process
+    # object whose ExitCode is null even after it has exited.
+    $proc = Start-Process -FilePath 'winget' -ArgumentList $wgArgs -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+    $code = try { $proc.ExitCode } catch { $null }
+    if ($null -eq $code -or $WingetSuccessExitCodes -contains $code) { return $true }
+    Write-Host "      winget exit code $code" -ForegroundColor DarkGray
+    return $false
+}
+
+function Get-VSCodeCli {
+    # The code.cmd shim, wherever the install put it. Looked up by path rather
+    # than called off PATH: the installer does add itself, but this process
+    # already had its environment when it started and will not see it.
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Microsoft VS Code\bin\code.cmd"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft VS Code\bin\code.cmd"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Microsoft VS Code\bin\code.cmd")
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+function Add-MachinePathEntry {
+    # Machine PATH, not the per-account one the guide's click-through describes:
+    # this runs elevated on a box being set up for someone else, and a compiler
+    # only the technician's account can see is not a working environment.
+    # Returns $true when it added the folder, $false when it was already there.
+    param([string]$Folder)
+
+    $current = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $parts = @($current -split ';' | Where-Object { $_ })
+    if ($parts -contains $Folder) { return $false }
+
+    [Environment]::SetEnvironmentVariable('Path', (($parts + $Folder) -join ';'), 'Machine')
+    # A machine variable only reaches processes started after it - including
+    # this one, which is why it is also pushed into the live environment so the
+    # verification step below can actually find gcc.
+    $env:Path = "$env:Path;$Folder"
+    return $true
+}
+
+function Install-CppEnvironment {
+    # Follows the VS Code C++ guide for Windows, MinGW-w64 flavour:
+    #   https://code.visualstudio.com/docs/languages/cpp
+    #   https://code.visualstudio.com/docs/cpp/config-mingw
+    #
+    # All four steps matter. The C/C++ extension ships neither a compiler nor a
+    # debugger - "VS Code as an editor relies on command-line tools" - so a
+    # machine given only the editor and the extension has a C++ setup that
+    # cannot build anything.
+    Write-Host "`n[C++] VS Code + MinGW-w64 (MSYS2) development environment" -ForegroundColor Magenta
+
+    # Every step here goes through winget, so there is no point failing four
+    # times over when it is missing. Tool 1 in this same window is the fix.
+    if ($null -eq (Get-WingetVersion)) {
+        Write-Host "`n[ERROR] Winget is not available on this machine." -ForegroundColor Red
+        Write-Host "        Run 'Update Winget' first, then come back to this tool." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "      This downloads roughly 2GB and adds $Script:MsysBinDir" -ForegroundColor DarkGray
+    Write-Host "      to the machine PATH." -ForegroundColor DarkGray
+    Write-Host "`n  Continue? [y/N] " -NoNewline -ForegroundColor Yellow
+    if ("$([System.Console]::ReadKey($false).KeyChar)" -notmatch '^[yY]$') {
+        Write-Host "`n[Cancelled] Nothing was installed." -ForegroundColor Yellow
+        return
+    }
+    Write-Host "`n"
+
+    $results = New-Object System.Collections.Specialized.OrderedDictionary
+
+    # --- 1. The editor ---
+    # --scope machine so every account on the box gets it, not just whoever the
+    # technician happened to be logged in as.
+    Write-Host "[1/4] Installing Visual Studio Code..." -ForegroundColor Cyan
+    $results['VS Code'] = Invoke-WingetInstall -Id 'Microsoft.VisualStudioCode' -ExtraArgs @('--scope', 'machine')
+
+    # --- 2. The toolchain host ---
+    Write-Host "[2/4] Installing MSYS2..." -ForegroundColor Cyan
+    $results['MSYS2'] = Invoke-WingetInstall -Id 'MSYS2.MSYS2'
+
+    # --- 3. The compiler itself ---
+    Write-Host "[3/4] Installing the MinGW-w64 toolchain (this is the slow one)..." -ForegroundColor Cyan
+    $bash = Join-Path $Script:MsysRoot "usr\bin\bash.exe"
+    if (-not (Test-Path -LiteralPath $bash)) {
+        Write-Host "      MSYS2 is not at $Script:MsysRoot - skipping the toolchain." -ForegroundColor Yellow
+        $results['MinGW-w64 toolchain'] = $false
+    }
+    else {
+        # Called directly rather than through Start-Process so pacman's progress
+        # is visible - this step is minutes long and a silent window looks hung.
+        # --noconfirm is what the guide's "press Enter, then type Y" becomes
+        # when nobody is at the keyboard.
+        & $bash -lc "pacman -Syu --noconfirm"
+        & $bash -lc "pacman -S --needed --noconfirm base-devel mingw-w64-ucrt-x86_64-toolchain"
+        $results['MinGW-w64 toolchain'] = ($LASTEXITCODE -eq 0)
+    }
+
+    # --- 4. PATH and the extension ---
+    Write-Host "[4/4] Setting PATH and installing the C/C++ extension..." -ForegroundColor Cyan
+    if (Test-Path -LiteralPath $Script:MsysBinDir) {
+        if (Add-MachinePathEntry -Folder $Script:MsysBinDir) {
+            Write-Host "      Added $Script:MsysBinDir to the machine PATH." -ForegroundColor Gray
+        }
+        else {
+            Write-Host "      $Script:MsysBinDir was already on the machine PATH." -ForegroundColor Gray
+        }
+        $results['PATH'] = $true
+    }
+    else {
+        Write-Host "      $Script:MsysBinDir does not exist - PATH left alone." -ForegroundColor Yellow
+        $results['PATH'] = $false
+    }
+
+    $codeCli = Get-VSCodeCli
+    if ($codeCli) {
+        # ms-vscode.cpptools is the extension id the guide names.
+        & $codeCli --install-extension ms-vscode.cpptools --force 2>&1 | ForEach-Object {
+            Write-Host "      $_" -ForegroundColor DarkGray
+        }
+        $results['C/C++ extension'] = ($LASTEXITCODE -eq 0)
+    }
+    else {
+        Write-Host "      code.cmd not found - skipping the extension." -ForegroundColor Yellow
+        $results['C/C++ extension'] = $false
+    }
+
+    # --- What actually ended up on the machine ---
+    Write-Host "`n[C++ Results]" -ForegroundColor Cyan
+    foreach ($k in $results.Keys) {
+        if ($results[$k]) { Write-Host ("   {0} {1}" -f $Script:Glyph.Ok,   $k) -ForegroundColor Green }
+        else              { Write-Host ("   {0} {1}" -f $Script:Glyph.Fail, $k) -ForegroundColor Red }
+    }
+
+    # The guide ends by having you run these in a *new* terminal, so they are run
+    # here from the toolchain folder directly - the point is to prove the
+    # compiler is really on disk, not that this console's PATH caught up.
+    Write-Host "`n[Compiler check]" -ForegroundColor Cyan
+    foreach ($exe in @('gcc', 'g++', 'gdb')) {
+        $full = Join-Path $Script:MsysBinDir "$exe.exe"
+        if (Test-Path -LiteralPath $full) {
+            $line = try { (& $full --version 2>&1 | Select-Object -First 1) } catch { "could not be run" }
+            Write-Host ("   {0} {1}" -f $Script:Glyph.Ok, $line) -ForegroundColor Green
+        }
+        else {
+            Write-Host ("   {0} {1} not found in {2}" -f $Script:Glyph.Fail, $exe, $Script:MsysBinDir) -ForegroundColor Red
+        }
+    }
+    Write-Host "`n   Open a NEW terminal before using gcc - PATH changes do not" -ForegroundColor DarkGray
+    Write-Host "   reach terminals that were already running." -ForegroundColor DarkGray
+}
+
 # Everything the CLI-TOOL window offers. Adding one is a line here plus a case
 # in the switch inside Invoke-CliTools - the numbering, the Back slot and the
 # arrow-key wrapping all size themselves off this table.
 $CliTools = @(
-    @{ Label = "Update Winget"; Desc = "Latest App Installer from GitHub, no Store needed"; Action = "Winget" }
+    @{ Label = "Update Winget";       Desc = "Latest App Installer from GitHub, no Store needed"; Action = "Winget" },
+    @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension";   Action = "Cpp"    }
 )
 
 function Read-CliToolChoice {
@@ -1865,6 +2038,7 @@ function Invoke-CliTools {
         Clear-Host
         switch ($CliTools[$choice].Action) {
             'Winget' { Update-Winget }
+            'Cpp'    { Install-CppEnvironment }
             default  { Write-Host "[ERROR] Unknown tool '$($CliTools[$choice].Action)'." -ForegroundColor Red }
         }
         Write-Host "`nPress any key to return to the tool list..." -ForegroundColor Gray
