@@ -2641,6 +2641,18 @@ function Invoke-LenovoDriverUpdate {
         catch { $fatal = $_ }
     }
 
+    # A run on a real machine came back with twelve System.String values instead
+    # of package objects - the module had echoed its log to the output stream
+    # because -LogPath was passed. Strings cannot be filtered on Category, and
+    # Save-LnvUpdate -Package would reject them, so the whole run was quietly
+    # working on text. Detected here and retried without the log, since the
+    # packages matter and the log does not.
+    if ($all.Count -gt 0 -and ($all | Where-Object { $_ -isnot [string] }).Count -eq 0) {
+        Write-Host "      The scan returned text, not packages - retrying without -LogPath..." -ForegroundColor Yellow
+        try { $all = @(Get-LnvUpdate -ErrorVariable scanErr -ErrorAction SilentlyContinue) }
+        catch { $fatal = $_ }
+    }
+
     if ($fatal) {
         Write-Host "`n[ERROR] The scan could not run at all." -ForegroundColor Red
         Write-Host "        $($fatal.Exception.Message)" -ForegroundColor DarkGray
@@ -2699,7 +2711,14 @@ function Invoke-LenovoDriverUpdate {
             $dump += "Count: $($all.Count)"
             $dump += "Properties: $pkgProps"
             $dump += ""
-            $dump += "--- first package, every property ---"
+            # The raw values come first. Format-List on a String prints only its
+            # Length, which is exactly what happened on the run that mattered -
+            # the dump reported "System.String, Length 75" and never showed what
+            # those 75 characters said.
+            $dump += "--- first 5 items, as text ---"
+            foreach ($item in @($all | Select-Object -First 5)) { $dump += "  $item" }
+            $dump += ""
+            $dump += "--- first item, every property ---"
             $dump += ($all[0] | Format-List * -Force | Out-String)
             $dump += "--- its Installer ---"
             $dump += ($all[0].Installer | Format-List * -Force | Out-String)
@@ -2707,6 +2726,24 @@ function Invoke-LenovoDriverUpdate {
             Write-Host "      Full shape  : $shapeFile" -ForegroundColor Yellow
         }
         catch { }
+    }
+
+    # If they are still text after the retry, nothing below can mean anything:
+    # a string has no Category to filter on and Save-LnvUpdate would reject it.
+    # Stopping here is honest; carrying on would produce a confident list of
+    # log lines and offer to install them.
+    # The Count guard is not decoration: an empty array also has zero non-string
+    # items, so without it a machine with nothing to update would be reported as
+    # having returned text. An earlier return already covers the empty case, but
+    # a check that only holds because of something forty lines above is one edit
+    # away from being wrong.
+    if ($all.Count -gt 0 -and ($all | Where-Object { $_ -isnot [string] }).Count -eq 0) {
+        Write-Host "`n[ERROR] The scan returned text rather than update packages." -ForegroundColor Red
+        Write-Host "        Nothing can be filtered or installed from that, so this stops here." -ForegroundColor DarkGray
+        Write-Host "        First few lines:" -ForegroundColor DarkGray
+        foreach ($t in @($all | Select-Object -First 3)) { Write-Host "          $t" -ForegroundColor DarkGray }
+        Write-Host "        Full output: $shapeFile" -ForegroundColor Yellow
+        return
     }
 
     $drivers = @()
