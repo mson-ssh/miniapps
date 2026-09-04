@@ -2081,48 +2081,104 @@ function Get-DcuCli {
 }
 
 function Get-DcuResultText {
-    # dcu-cli's documented exit codes. Reading them is the whole difference
-    # between "no updates were needed" and "it failed" - both leave the machine
-    # unchanged, and only the number says which happened.
-    param([int]$Code)
+    # DCU reuses generic codes across commands, but its operation-specific codes
+    # do not. In particular, 500 means "no updates" only for /scan, and code 5
+    # means the requested operation did NOT run because a reboot was already
+    # pending. Keep those states separate from a successful apply.
+    param(
+        [ValidateSet('Scan', 'Apply')][string]$Operation,
+        [int]$Code
+    )
+
+    $result = @{ Ok = $false; NoUpdates = $false; NotPerformed = $false
+                 RebootNeeded = $false; Text = "exit code $Code" }
+
     switch ($Code) {
-        0   { return @{ Ok = $true;  Text = "completed" } }
-        1   { return @{ Ok = $true;  Text = "completed - a reboot is required" } }
-        5   { return @{ Ok = $true;  Text = "a reboot was already pending before this ran" } }
-        500 { return @{ Ok = $true;  Text = "no updates found - drivers are already current" } }
-        2   { return @{ Ok = $false; Text = "unknown application error" } }
-        default { return @{ Ok = $false; Text = "exit code $Code" } }
+        0 { $result.Ok = $true; $result.Text = "completed"; return $result }
+        1 {
+            $result.Ok = $true
+            $result.RebootNeeded = $true
+            $result.Text = "completed - a reboot is required"
+            return $result
+        }
+        2 { $result.Text = "unknown application error"; return $result }
+        3 { $result.Text = "the current system manufacturer is not Dell"; return $result }
+        4 { $result.Text = "dcu-cli was not launched as Administrator"; return $result }
+        5 {
+            $result.NotPerformed = $true
+            $result.Text = "not performed - a reboot was already pending"
+            return $result
+        }
+        6 { $result.Text = "another Dell Command Update instance is running"; return $result }
+        7 { $result.Text = "this system model is not supported by Dell Command Update"; return $result }
+        8 { $result.Text = "no update filters were applied or configured"; return $result }
+        3000 { $result.Text = "Dell Client Management Service is not running"; return $result }
+        3001 { $result.Text = "Dell Client Management Service is not installed"; return $result }
+        3002 { $result.Text = "Dell Client Management Service is disabled"; return $result }
+        3003 { $result.Text = "Dell Client Management Service is busy"; return $result }
+        3004 { $result.Text = "Dell Client Management Service is updating itself"; return $result }
+        3005 { $result.Text = "Dell Client Management Service is installing pending updates"; return $result }
     }
-}
 
-# Dell Command Update is a WPF application. Without the .NET Desktop Runtime its
-# installer stops partway and leaves nothing behind, so the runtime is a
-# prerequisite rather than a nicety. 10.0.8 is the floor; winget installs the
-# current 10.0.x, which is above it.
-$Script:DotNetDesktopMin = [version]"10.0.8"
-
-function Get-DotNetDesktopVersion {
-    # Highest Microsoft.WindowsDesktop.App runtime installed, or $null.
-    #
-    # Read off the shared-framework folder rather than asking
-    # "dotnet --list-runtimes": that needs the dotnet host on PATH, and a machine
-    # that has the runtime but never had the SDK usually does not have it there -
-    # which would report "missing" on a machine that is fine.
-    $root = Join-Path $env:ProgramFiles "dotnet\shared\Microsoft.WindowsDesktop.App"
-    if (-not (Test-Path -LiteralPath $root)) { return $null }
-
-    $best = $null
-    foreach ($dir in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
-        # Preview folders carry a suffix ("10.0.0-preview.3.12345.6"). A preview
-        # does not count as the release it precedes, so they are skipped rather
-        # than trimmed down to a number they have not earned.
-        if ($dir.Name -match '-') { continue }
-        $v = $null
-        if ([version]::TryParse($dir.Name, [ref]$v)) {
-            if ($null -eq $best -or $v -gt $best) { $best = $v }
+    if ($Operation -eq 'Scan') {
+        switch ($Code) {
+            500 {
+                $result.Ok = $true
+                $result.NoUpdates = $true
+                $result.Text = "no updates found for the driver filter"
+            }
+            501 { $result.Text = "the scan could not determine the available updates" }
+            502 { $result.Text = "the scan was cancelled" }
+            503 { $result.Text = "the scan could not download a required file" }
         }
     }
-    return $best
+    else {
+        switch ($Code) {
+            1000 { $result.Text = "applyUpdates could not retrieve its result" }
+            1001 { $result.Text = "applyUpdates was cancelled" }
+            1002 { $result.Text = "applyUpdates could not download an update" }
+        }
+    }
+    return $result
+}
+
+# A network scan can legitimately take minutes, and applying several drivers can
+# take much longer. Both still need a ceiling so a dead service or installer does
+# not hold the CLI-TOOL window forever.
+$Script:DcuScanTimeoutSec  = 900
+$Script:DcuApplyTimeoutSec = 3600
+
+function Invoke-DcuProcess {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][int]$TimeoutSec
+    )
+
+    try {
+        # Inherit the current console so DCU's own progress remains visible.
+        $proc = Start-Process -FilePath $FilePath -ArgumentList $Arguments `
+                              -NoNewWindow -PassThru -ErrorAction Stop
+    }
+    catch {
+        return [pscustomobject]@{ Started = $false; TimedOut = $false
+                                  ExitCode = $null; Error = $_.Exception.Message }
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+    }
+
+    if (-not $proc.HasExited) {
+        $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Started = $true; TimedOut = $true
+                                  ExitCode = $null; Error = "" }
+    }
+
+    $code = try { $proc.ExitCode } catch { $null }
+    return [pscustomobject]@{ Started = $true; TimedOut = $false
+                              ExitCode = $code; Error = "" }
 }
 
 function Get-RebootPendingReason {
@@ -2255,29 +2311,19 @@ function Invoke-DellCommandUpdate {
 
     if (Confirm-RebootPendingBlock -What "dcu-cli") { return }
 
-    # --- 2. .NET Desktop Runtime, before anything tries to install DCU ---
-    Write-Host "`n[2/5] Checking the .NET Desktop Runtime..." -ForegroundColor Cyan
-    $dotnet = Get-DotNetDesktopVersion
-    $needRuntime = ($null -eq $dotnet -or $dotnet -lt $Script:DotNetDesktopMin)
-    if ($needRuntime) {
-        $have = if ($dotnet) { "$dotnet" } else { "none installed" }
-        Write-Host "      Found $have, need $($Script:DotNetDesktopMin) or newer." -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "      Found $dotnet - meets the $($Script:DotNetDesktopMin) minimum." -ForegroundColor DarkGray
-    }
-
+    # --- 2. Locate DCU and prepare Winget only if it has to be installed. ---
+    Write-Host "`n[2/5] Checking Dell Command Update..." -ForegroundColor Cyan
     $dcu = Get-DcuCli
     $needDcu = ($null -eq $dcu)
+    if ($needDcu) {
+        Write-Host "      dcu-cli.exe is not installed." -ForegroundColor Yellow
 
-    # winget is prepared once, and only when something is actually going to be
-    # fetched - a machine with both prerequisites already in place should not pay
-    # a version check, let alone a 207MB upgrade, to be told it needs nothing.
-    if ($needRuntime -or $needDcu) {
+        # Dell.CommandUpdate's Winget manifest owns the runtime dependency. That
+        # relationship changes with the DCU release (5.7.0 needs .NET 8 while
+        # 5.7.1 needs .NET 10), so pre-installing one hard-coded runtime here can
+        # leave two runtimes on the machine and still validate the wrong one.
         Write-Host "      winget: $(Get-WingetVersionText)" -ForegroundColor DarkGray
         if (-not (Test-WingetIsCurrent)) {
-            # An out-of-date client is the usual cause of a failed winget install,
-            # so it is brought current first rather than diagnosed afterwards.
             Write-Host "      Out of date or missing - updating it first (~207MB)..." -ForegroundColor Yellow
             Install-AppInstaller
             Write-Host "      winget now: $(Get-WingetVersionText)" -ForegroundColor Gray
@@ -2287,27 +2333,17 @@ function Invoke-DellCommandUpdate {
             return
         }
     }
-
-    if ($needRuntime) {
-        Write-Host "      Installing .NET Desktop Runtime..." -ForegroundColor Cyan
-        Invoke-WingetInstall -Id 'Microsoft.DotNet.DesktopRuntime.10' | Out-Null
-        $dotnet = Get-DotNetDesktopVersion
-        if ($null -eq $dotnet -or $dotnet -lt $Script:DotNetDesktopMin) {
-            # Stopping here on purpose. Letting the DCU install run without it is
-            # exactly the failure this step exists to prevent: its installer quits
-            # partway and leaves nothing to show for the wait.
-            $have = if ($dotnet) { "$dotnet" } else { "still nothing" }
-            Write-Host "`n[ERROR] .NET Desktop Runtime is $have after the install." -ForegroundColor Red
-            Write-Host "        DCU's installer stops without it, so nothing further was attempted." -ForegroundColor DarkGray
-            return
-        }
-        Write-Host "      Now $dotnet." -ForegroundColor Gray
+    else {
+        Write-Host "      Installed: $dcu" -ForegroundColor DarkGray
     }
 
     # --- 3. The tool itself ---
     if ($needDcu) {
-        Write-Host "`n[3/5] Dell Command Update is not installed - fetching it..." -ForegroundColor Cyan
-        Invoke-WingetInstall -Id 'Dell.CommandUpdate' | Out-Null
+        Write-Host "`n[3/5] Installing Dell Command Update and its declared dependencies..." -ForegroundColor Cyan
+        if (-not (Invoke-WingetInstall -Id 'Dell.CommandUpdate')) {
+            Write-Host "`n[ERROR] Winget could not install Dell Command Update." -ForegroundColor Red
+            return
+        }
         $dcu = Get-DcuCli
     }
     else {
@@ -2322,21 +2358,40 @@ function Invoke-DellCommandUpdate {
     Write-Host "      $dcu" -ForegroundColor DarkGray
 
     # --- 4. Scan, drivers only, with both artefacts written to disk ---
-    # Called with & rather than Start-Process so dcu-cli's own progress reaches
-    # the console; a scan runs for minutes and a hidden window reads as a hang.
     Write-Host "`n[4/5] Scanning for driver updates..." -ForegroundColor Cyan
-    & $dcu /scan -updateType=driver -silent -report="$work" -outputLog="$scanLog"
-    $scanCode = $LASTEXITCODE
-    $scan = Get-DcuResultText -Code $scanCode
+    $scanArgs = @('/scan', '-updateType=driver', '-silent',
+                  ("-report=`"{0}`"" -f $work), ("-outputLog=`"{0}`"" -f $scanLog))
+    $scanRun = Invoke-DcuProcess -FilePath $dcu -Arguments $scanArgs -TimeoutSec $Script:DcuScanTimeoutSec
+    if (-not $scanRun.Started) {
+        Write-Host "`n[ERROR] Could not start dcu-cli - $($scanRun.Error)" -ForegroundColor Red
+        return
+    }
+    if ($scanRun.TimedOut) {
+        Write-Host ("`n[ERROR] The DCU scan exceeded {0} minutes and was stopped." -f
+            [int]($Script:DcuScanTimeoutSec / 60)) -ForegroundColor Red
+        Write-Host "        Log: $scanLog" -ForegroundColor DarkGray
+        return
+    }
+    if ($null -eq $scanRun.ExitCode) {
+        Write-Host "`n[ERROR] DCU finished scanning but did not return an exit code." -ForegroundColor Red
+        return
+    }
+    $scanCode = [int]$scanRun.ExitCode
+    $scan = Get-DcuResultText -Operation Scan -Code $scanCode
     Write-Host ("      Scan: {0}" -f $scan.Text) -ForegroundColor DarkGray
 
-    if ($scanCode -eq 500) {
+    if ($scan.NoUpdates) {
         Write-Host "`n[OK] Nothing to install - drivers are already current." -ForegroundColor Green
         Write-Host "     Log: $scanLog" -ForegroundColor DarkGray
         return
     }
     if (-not $scan.Ok) {
-        Write-Host "`n[ERROR] The scan failed - nothing was applied." -ForegroundColor Red
+        if ($scan.NotPerformed) {
+            Write-Host "`n[STOPPED] The scan was not performed - restart Windows first." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "`n[ERROR] The scan failed - nothing was applied." -ForegroundColor Red
+        }
         Write-Host "        Log: $scanLog" -ForegroundColor DarkGray
         return
     }
@@ -2375,19 +2430,52 @@ function Invoke-DellCommandUpdate {
     # -forceUpdate is deliberately NOT passed: it reinstalls drivers that are
     # already current. -updateType=driver keeps the apply as narrow as the scan;
     # adding ",bios,firmware" to both strings widens it.
-    & $dcu /applyUpdates -updateType=driver -silent -reboot=disable -outputLog="$applyLog"
-    $applyCode = $LASTEXITCODE
-    $apply = Get-DcuResultText -Code $applyCode
+    $applyArgs = @('/applyUpdates', '-updateType=driver', '-silent', '-reboot=disable',
+                   ("-outputLog=`"{0}`"" -f $applyLog))
+    $applyRun = Invoke-DcuProcess -FilePath $dcu -Arguments $applyArgs -TimeoutSec $Script:DcuApplyTimeoutSec
+
+    if (-not $applyRun.Started) {
+        Write-Host "`n[ERROR] Could not start dcu-cli - $($applyRun.Error)" -ForegroundColor Red
+        return
+    }
+    if ($applyRun.TimedOut) {
+        Write-Host ("`n[ERROR] Applying drivers exceeded {0} minutes and was stopped." -f
+            [int]($Script:DcuApplyTimeoutSec / 60)) -ForegroundColor Red
+        Write-Host "        Apply log: $applyLog" -ForegroundColor DarkGray
+        return
+    }
+    if ($null -eq $applyRun.ExitCode) {
+        Write-Host "`n[ERROR] DCU finished applying drivers but did not return an exit code." -ForegroundColor Red
+        return
+    }
+
+    $applyCode = [int]$applyRun.ExitCode
+    $apply = Get-DcuResultText -Operation Apply -Code $applyCode
 
     Write-Host "`n[DCU Results]" -ForegroundColor Cyan
-    if ($apply.Ok) { Write-Host ("   {0} {1}" -f $Script:Glyph.Ok,   $apply.Text) -ForegroundColor Green }
-    else           { Write-Host ("   {0} {1}" -f $Script:Glyph.Fail, $apply.Text) -ForegroundColor Red }
+    if ($apply.Ok) {
+        Write-Host ("   {0} {1}" -f $Script:Glyph.Ok, $apply.Text) -ForegroundColor Green
+    }
+    elseif ($apply.NotPerformed) {
+        Write-Host ("   {0} {1}" -f $Script:Glyph.Skip, $apply.Text) -ForegroundColor Yellow
+    }
+    else {
+        Write-Host ("   {0} {1}" -f $Script:Glyph.Fail, $apply.Text) -ForegroundColor Red
+    }
     Write-Host   ("   Exit code    : {0}" -f $applyCode) -ForegroundColor DarkGray
-    Write-Host   ("   Reboot needed: {0}" -f $(if ($applyCode -eq 1 -or $applyCode -eq 5) { "YES" } else { "no" })) -ForegroundColor DarkGray
+    Write-Host   ("   Reboot needed: {0}" -f $(if ($apply.RebootNeeded) { "YES" } else { "no" })) -ForegroundColor DarkGray
     Write-Host   ("   Report       : {0}" -f $reportXml) -ForegroundColor DarkGray
     Write-Host   ("   Scan log     : {0}" -f $scanLog) -ForegroundColor DarkGray
     Write-Host   ("   Apply log    : {0}" -f $applyLog) -ForegroundColor DarkGray
-    Write-Host "`n   Nothing was restarted. Reboot when you are ready." -ForegroundColor DarkGray
+    if ($apply.RebootNeeded -or $apply.NotPerformed) {
+        Write-Host "`n   Nothing was restarted automatically. Reboot Windows before the next run." -ForegroundColor DarkGray
+    }
+    elseif ($apply.Ok) {
+        Write-Host "`n   Driver updates completed without an automatic restart." -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "`n   Nothing was restarted. Review the error and apply log before retrying." -ForegroundColor DarkGray
+    }
 }
 
 # =========================================================================
@@ -4032,4 +4120,3 @@ while ($true) {
     # firing off several windows before the first shows up as [running].
     Start-Sleep -Seconds 2
 }
-

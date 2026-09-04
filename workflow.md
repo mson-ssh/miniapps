@@ -245,7 +245,8 @@ driver khác mới trở nên applicable.
 
 `Dell Command Update` chạy 5 bước, không bước nào bỏ được:
 
-1. **Tiền kiểm** — Dell, Administrator, và **reboot pending**, nhưng cái cuối **không chặn**.
+1. **Tiền kiểm** — Dell, Administrator, và **reboot pending**. File-rename queue đơn lẻ không
+   chặn; hai tín hiệu reboot đáng tin thì cảnh báo và hỏi `[y/N]` trước khi đi tiếp.
 
    > **Đã báo nhầm một lần.** Bản đầu coi cả ba khóa registry là chốt chặn cứng, và máy **vừa khởi
    > động lại xong** vẫn bị từ chối. Thủ phạm là `PendingFileRenameOperations`: Windows xóa nó lúc
@@ -263,22 +264,23 @@ driver khác mới trở nên applicable.
    > từ chối và trả mã `5` nếu thật sự không chạy được — mã đó đã map rồi. Nên giá của việc chạy
    > tiếp là một thông báo rõ ràng sau vài phút, còn giá của một lần báo nhầm là kỹ thuật viên bị
    > khóa hoàn toàn khỏi tính năng, không lối thoát.
-2. **.NET Desktop Runtime ≥ 10.0.8** — DCU là ứng dụng WPF; **thiếu runtime thì installer của nó
-   dừng giữa chừng và không để lại gì**. Nên đây là điều kiện tiên quyết, phải xong **trước** khi
-   đụng tới DCU. Dò bằng cách đọc thư mục
-   `%ProgramFiles%\dotnet\shared\Microsoft.WindowsDesktop.App` chứ không hỏi
-   `dotnet --list-runtimes` — lệnh đó cần dotnet host nằm trên PATH, mà máy chỉ có runtime (không
-   có SDK) thường không có, và sẽ báo "thiếu" trên một máy vốn đủ. Cài lại vẫn không đạt ngưỡng
-   thì **dừng hẳn**, không thử cài DCU nữa.
-3. **Cài DCU nếu thiếu** — winget được chuẩn bị **một lần**, và chỉ khi thực sự có thứ cần tải:
-   máy đã đủ cả hai điều kiện thì không phải trả giá một lần kiểm version, nói gì tới 207MB. Dùng
-   chung `Test-WingetIsCurrent` với job nền của engine, một hàm duy nhất nên hai chỗ không lệch.
+2. **Dò DCU** — nếu đã có `dcu-cli.exe` thì dùng bản đang có và không đụng tới Winget. Nếu thiếu,
+   Winget được chuẩn bị đúng một lần. Tool không còn tự ghim một bản .NET Runtime: dependency thay
+   đổi theo release DCU (`5.7.0` dùng .NET 8, `5.7.1` dùng .NET 10), nên manifest
+   `Dell.CommandUpdate` phải là nguồn quyết định và cài đúng runtime đi cùng package thực tế.
+3. **Cài DCU nếu thiếu** — `winget install Dell.CommandUpdate` cài cả DCU lẫn dependency mà
+   manifest của chính phiên bản đó khai báo. Sau lệnh này vẫn kiểm tra `dcu-cli.exe` thật sự tồn
+   tại; exit code Winget thành công nhưng không tìm thấy CLI thì dừng, không giả vờ đi tiếp.
 4. **Scan + xuất file** — `/scan -updateType=driver -silent -report=<dir> -outputLog=<file>`,
    ghi vào `%TEMP%\MiniApp\DCU\`. Report cũ bị xóa trước, không thì nó bị đọc nhầm thành kết quả
    của lượt này.
 5. **Đọc XML, in ra, rồi mới hỏi** — `DCUApplicableUpdates.xml` có gốc `updates` chứa các `update`
    mang `type` / `name` / `version` / `Urgency`. Chỉ sau khi anh xác nhận mới chạy
    `/applyUpdates -updateType=driver -silent -reboot=disable -outputLog=<file>`.
+
+`/scan` có trần 15 phút và `/applyUpdates` có trần 60 phút. Cả hai chạy qua
+`Invoke-DcuProcess`, vẫn kế thừa console để hiện tiến trình của DCU; quá hạn thì process bị dừng
+và lượt chạy báo lỗi thay vì giữ cửa sổ CLI-TOOL vô hạn.
 
 Cố ý **không** truyền `-forceUpdate` — nó cài lại cả driver đang mới, mất thời gian mà không được
 gì. Đổi `-updateType=driver` ở **cả hai** lệnh thành `driver,bios,firmware` là mở rộng sang BIOS.
@@ -289,16 +291,22 @@ gì. Đổi `-updateType=driver` ở **cả hai** lệnh thành `driver,bios,fir
 > điển của PowerShell), nên phải lọc `Where-Object { $_ }` — thiếu nó thì report rỗng báo
 > "1 update found" rồi in một dòng trắng.
 
-Mã thoát của `dcu-cli` phải đọc mới phân biệt được, vì `0`, `1`, `5` và `500` **đều để máy nguyên
-trạng**:
+Mã thoát được đọc theo **đúng operation** — `500` chỉ có nghĩa "không có update" đối với `/scan`,
+không phải mã thành công dùng chung:
 
 | Mã | Nghĩa |
 |---|---|
 | `0` | xong |
 | `1` | xong, **cần khởi động lại** |
-| `5` | đã có yêu cầu khởi động lại từ trước |
-| `500` | không tìm thấy update — driver đã mới nhất |
+| `5` | **không thực hiện** — đã có yêu cầu khởi động lại từ trước |
+| `500` | scan không tìm thấy update theo bộ lọc driver |
+| `501` / `502` / `503` | scan lỗi / bị hủy / tải file lỗi |
+| `1000` / `1001` / `1002` | apply không lấy được kết quả / bị hủy / tải update lỗi |
+| `3000`–`3005` | Dell Client Management Service thiếu, dừng, tắt hoặc đang bận |
 | `2` | lỗi ứng dụng |
+
+Code `5` không còn được tô xanh hay tính là "cài xong, cần reboot". Chỉ code `1` mới mang nghĩa
+operation đã hoàn tất và cần khởi động lại.
 
 Chỉ chạy trên máy Dell (`Win32_ComputerSystem.Manufacturer`), và **in ra tên hãng** khi từ chối để
 một chuỗi OEM lạ nhìn ra được chứ không giống lỗi.
@@ -470,6 +478,8 @@ hơn, chỉ giấu cùng điểm gãy sau một cmdlet và trả về mã thô n
 | `$Script:MaxDlTries` | 3 | số lần thử lại **cùng một link**, backoff 0s→2s→4s |
 | `$Script:DlStallSec` | 90 | đứng yên bao lâu thì coi là treo (`WebClient` không có timeout) |
 | `$Script:JobTimeoutSec` | 3600 | trần cho mọi job nền |
+| `$Script:DcuScanTimeoutSec` | 900 | trần 15 phút cho một lượt DCU scan |
+| `$Script:DcuApplyTimeoutSec` | 3600 | trần 60 phút cho một lượt DCU apply |
 | `$Script:UiWidth` | 76 | bề rộng khung — bảng tiến trình dùng chung |
 | `$Script:MaxPasswordTries` | 3 | sai đủ số này thì đóng PowerShell |
 | `$Script:AccessPassword` | `@z` | biển "nhân viên only", **không phải khóa** — plaintext trong file public |
