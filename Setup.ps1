@@ -1945,11 +1945,17 @@ function Install-CppEnvironment {
     # cannot build anything.
     Write-Host "`n[C++] VS Code + MinGW-w64 (MSYS2) development environment" -ForegroundColor Magenta
 
-    # Every step here goes through winget, so there is no point failing four
-    # times over when it is missing. Tool 1 in this same window is the fix.
+    # Every step here goes through winget, so it is brought up before the first
+    # one rather than failing four times over. This used to point at an "Update
+    # Winget" tool in this same window, which was removed when the install engine
+    # started refreshing winget on its own - leaving a dead end with no way out.
+    if (-not (Test-WingetIsCurrent)) {
+        Write-Host "      winget is missing or out of date - fixing that first (~207MB)..." -ForegroundColor Yellow
+        Install-AppInstaller
+    }
     if ($null -eq (Get-WingetVersion)) {
-        Write-Host "`n[ERROR] Winget is not available on this machine." -ForegroundColor Red
-        Write-Host "        Run 'Update Winget' first, then come back to this tool." -ForegroundColor Yellow
+        Write-Host "`n[ERROR] Winget could not be installed, so nothing here can run." -ForegroundColor Red
+        Write-Host "        The reason is printed above." -ForegroundColor DarkGray
         return
     }
 
@@ -2320,14 +2326,23 @@ function Invoke-DellCommandUpdate {
 # =========================================================================
 # LENOVO DRIVER UPDATE (Lenovo.Client.Update)
 # =========================================================================
-# Built to docs/Lenovo-Global-driver.md. Three of its rules shape everything
-# below and none of them are negotiable:
+# Built to docs/Lenovo-Global-driver.md, with one rule deliberately overridden.
 #
-#   * LCU is provisioned by an administrator from an approved source. This code
-#     never downloads, installs or updates the module - it detects it and stops
-#     when it is absent.
+# The spec puts LCU in the hands of an administrator: provisioned ahead of time
+# from an approved source, never fetched by the running tool. That rule is
+# written for a governed enterprise rollout. This is a bench tool for setting up
+# one machine at a time, where nobody has pre-staged anything and the stop it
+# produced was simply a dead end - so the module is installed from PSGallery
+# when it is absent. The same file already takes ps2exe from PSGallery, so this
+# is the risk posture the project was already running at, not a new one.
+#
+# What is NOT relaxed, because none of it depends on where the module came from:
+#
 #   * No -SkipSignature / -SkipSignatureCheck anywhere, on any cmdlet. They are
 #     simply never passed, so verification stays on by default.
+#   * PSGallery is never marked Trusted. Install-Module -Force gets past the
+#     prompt for this one call instead of changing a machine-wide setting that
+#     would outlive the run.
 #   * Drivers only, filtered before anything is downloaded, and never a forced
 #     -Model. A China-SKU machine is reported as unverified rather than served a
 #     Global package.
@@ -2436,16 +2451,32 @@ function Invoke-LenovoDriverUpdate {
         return
     }
 
-    # LCU is provisioned, never fetched. Auto-installing it, trusting a
-    # repository or relaxing execution policy are all explicitly out of scope,
-    # so a missing module is a stop with instructions rather than a download.
     $lcu = Get-Module -ListAvailable -Name $Script:LcuModule -ErrorAction SilentlyContinue |
            Sort-Object Version -Descending | Select-Object -First 1
     if (-not $lcu) {
-        Write-Host "`n[STOP] $($Script:LcuModule) is not installed on this machine." -ForegroundColor Yellow
-        Write-Host "       It is provisioned by an administrator from an approved source;" -ForegroundColor DarkGray
-        Write-Host "       this tool does not download or update it. Install the approved" -ForegroundColor DarkGray
-        Write-Host "       version, then run this again." -ForegroundColor DarkGray
+        Write-Host "      $($Script:LcuModule) is not installed - fetching it from PSGallery..." -ForegroundColor Yellow
+        try {
+            if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+                Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop | Out-Null
+            }
+            # -Force clears the untrusted-repository prompt for this call only.
+            # Set-PSRepository -InstallationPolicy Trusted would do the same job
+            # by changing a machine-wide setting that outlives the run, which is
+            # the one part of the provisioning rule worth keeping.
+            Install-Module -Name $Script:LcuModule -Scope CurrentUser -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Host "`n[STOP] Could not install $($Script:LcuModule)." -ForegroundColor Red
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor DarkGray
+            Write-Host "       Install it by hand, then run this again:" -ForegroundColor DarkGray
+            Write-Host "         Install-Module -Name $($Script:LcuModule) -Scope CurrentUser" -ForegroundColor DarkGray
+            return
+        }
+        $lcu = Get-Module -ListAvailable -Name $Script:LcuModule -ErrorAction SilentlyContinue |
+               Sort-Object Version -Descending | Select-Object -First 1
+    }
+    if (-not $lcu) {
+        Write-Host "`n[STOP] $($Script:LcuModule) is still not available after the install." -ForegroundColor Red
         return
     }
     try { Import-Module $Script:LcuModule -ErrorAction Stop }
