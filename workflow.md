@@ -245,10 +245,24 @@ driver khác mới trở nên applicable.
 
 `Dell Command Update` chạy 5 bước, không bước nào bỏ được:
 
-1. **Tiền kiểm** — Dell, Administrator, và **reboot pending** (đọc 3 nguồn: `Component Based
-   Servicing\RebootPending`, `WindowsUpdate\Auto Update\RebootRequired`,
-   `PendingFileRenameOperations`). Kiểm reboot trước vì `dcu-cli` từ chối apply khi đang treo một
-   lần khởi động lại — nó trả mã `5`, nhưng chỉ sau khi đã chạy hết scan.
+1. **Tiền kiểm** — Dell, Administrator, và **reboot pending**, nhưng cái cuối **không chặn**.
+
+   > **Đã báo nhầm một lần.** Bản đầu coi cả ba khóa registry là chốt chặn cứng, và máy **vừa khởi
+   > động lại xong** vẫn bị từ chối. Thủ phạm là `PendingFileRenameOperations`: Windows xóa nó lúc
+   > boot, nhưng **bất kỳ installer nào chạy sau đó đều ghi lại vào** — kể cả 11 app mà chính tool
+   > này cài. Trên máy của dự án này nó gần như **luôn** được set và gần như **không bao giờ** đúng
+   > nghĩa.
+   >
+   > | Nguồn | Xử lý |
+   > |---|---|
+   > | `Component Based Servicing\RebootPending` | đáng tin — cảnh báo, **hỏi** `[y/N]` |
+   > | `WindowsUpdate\Auto Update\RebootRequired` | đáng tin — cảnh báo, **hỏi** `[y/N]` |
+   > | `Session Manager\PendingFileRenameOperations` | không đáng tin — chỉ ghi chú, **cho qua** |
+   >
+   > Sâu hơn: đây là **proxy thô cho một câu hỏi mà chính công cụ kia trả lời được**. `dcu-cli` tự
+   > từ chối và trả mã `5` nếu thật sự không chạy được — mã đó đã map rồi. Nên giá của việc chạy
+   > tiếp là một thông báo rõ ràng sau vài phút, còn giá của một lần báo nhầm là kỹ thuật viên bị
+   > khóa hoàn toàn khỏi tính năng, không lối thoát.
 2. **.NET Desktop Runtime ≥ 10.0.8** — DCU là ứng dụng WPF; **thiếu runtime thì installer của nó
    dừng giữa chừng và không để lại gì**. Nên đây là điều kiện tiên quyết, phải xong **trước** khi
    đụng tới DCU. Dò bằng cách đọc thư mục

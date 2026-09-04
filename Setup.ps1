@@ -2125,16 +2125,71 @@ function Get-DotNetDesktopVersion {
     return $best
 }
 
-function Test-RebootPending {
-    # Three places Windows records that the machine owes a restart. Any one is
-    # enough. Checked up front because dcu-cli will not apply while a reboot is
-    # pending - it returns 5, but only after running the whole scan first.
-    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") { return $true }
-    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") { return $true }
+function Get-RebootPendingReason {
+    # The signals Windows leaves when a restart is owed, returned as a list
+    # rather than a yes/no - because they are not equally trustworthy and the
+    # caller has to be able to say which one fired.
+    #
+    # Two are reliable. PendingFileRenameOperations is not: Windows clears it at
+    # boot, but any installer that runs afterwards fills it straight back in -
+    # including the eleven this very tool installs. A machine restarted minutes
+    # ago then reports a restart pending, which is exactly what happened on a
+    # real run.
+    $hard = @()
+    $soft = @()
+
+    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") {
+        $hard += "Component Based Servicing\RebootPending"
+    }
+    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") {
+        $hard += "WindowsUpdate\Auto Update\RebootRequired"
+    }
     $sm = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" `
                            -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
-    if ($sm -and $sm.PendingFileRenameOperations) { return $true }
-    return $false
+    if ($sm -and $sm.PendingFileRenameOperations) {
+        $soft += "Session Manager\PendingFileRenameOperations"
+    }
+
+    return @{ Hard = $hard; Soft = $soft }
+}
+
+function Confirm-RebootPendingBlock {
+    # $true when the caller should stop.
+    #
+    # Nothing here blocks on its own any more. The tool being run makes this
+    # decision itself and says so - dcu-cli returns exit code 5, which is already
+    # mapped - so the cost of carrying on is a clear message a few minutes later,
+    # while the cost of a false positive is a technician locked out of a driver
+    # update with no way forward. The registry is a proxy for a question the real
+    # tool can answer properly.
+    param([string]$What = "This step")
+
+    $r = Get-RebootPendingReason
+    if ($r.Hard.Count -eq 0 -and $r.Soft.Count -eq 0) {
+        Write-Host "      Reboot pending: no" -ForegroundColor DarkGray
+        return $false
+    }
+
+    # The rename queue on its own is not worth stopping for. It refills the
+    # moment anything is installed, so on these machines it is almost always set
+    # and almost never means what it says.
+    if ($r.Hard.Count -eq 0) {
+        Write-Host "      Reboot pending: only a queued file rename, which is normal after any install." -ForegroundColor DarkGray
+        return $false
+    }
+
+    Write-Host "`n[!] Windows reports a restart is still pending:" -ForegroundColor Yellow
+    foreach ($h in $r.Hard) { Write-Host "      $h" -ForegroundColor DarkGray }
+    foreach ($h in $r.Soft) { Write-Host "      $h  (unreliable)" -ForegroundColor DarkGray }
+    Write-Host "    These keys can stay set after a restart. $What may still work -" -ForegroundColor DarkGray
+    Write-Host "    it refuses on its own if it genuinely cannot run." -ForegroundColor DarkGray
+    Write-Host "`n  Continue anyway? [y/N] " -NoNewline -ForegroundColor Yellow
+    if ("$([System.Console]::ReadKey($false).KeyChar)" -match '^[yY]$') {
+        Write-Host "`n"
+        return $false
+    }
+    Write-Host "`n[Stopped] Restart the machine, then run this again." -ForegroundColor Yellow
+    return $true
 }
 
 function Read-DcuReport {
@@ -2198,13 +2253,7 @@ function Invoke-DellCommandUpdate {
     }
     Write-Host "      Administrator: yes" -ForegroundColor DarkGray
 
-    if (Test-RebootPending) {
-        Write-Host "`n[STOP] This machine has a restart pending." -ForegroundColor Yellow
-        Write-Host "       dcu-cli refuses to apply anything until that is done." -ForegroundColor DarkGray
-        Write-Host "       Reboot, then run this tool again." -ForegroundColor DarkGray
-        return
-    }
-    Write-Host "      Reboot pending: no" -ForegroundColor DarkGray
+    if (Confirm-RebootPendingBlock -What "dcu-cli") { return }
 
     # --- 2. .NET Desktop Runtime, before anything tries to install DCU ---
     Write-Host "`n[2/5] Checking the .NET Desktop Runtime..." -ForegroundColor Cyan
@@ -2570,10 +2619,7 @@ function Invoke-LenovoDriverUpdate {
     }
     Write-Host "      Platform: Windows $([Environment]::OSVersion.Version) · PowerShell $($PSVersionTable.PSVersion) · elevated" -ForegroundColor DarkGray
 
-    if (Test-RebootPending) {
-        Write-Host "`n[STOP] This machine has a restart pending - finish that first." -ForegroundColor Yellow
-        return
-    }
+    if (Confirm-RebootPendingBlock -What "the update") { return }
 
     $lcu = Get-Module -ListAvailable -Name $Script:LcuModule -ErrorAction SilentlyContinue |
            Sort-Object Version -Descending | Select-Object -First 1
