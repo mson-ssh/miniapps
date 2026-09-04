@@ -2385,6 +2385,26 @@ $Script:LnvExcluded = @(
     @{ Label = "application"; Pattern = '(?i)\b(vantage|application)\b' }
 )
 
+function Get-LnvField {
+    # The first of several candidate property names that actually carries a
+    # value, or "".
+    #
+    # Every field printed about a package used one hard-coded name taken from
+    # Lenovo's docs, and on a real machine FileSize, IsApplicable, IsInstalled
+    # and Installer.Unattended all came back empty - the module spells them
+    # differently. Names are tried in turn, and anything still unknown is left
+    # out of the line entirely rather than printed as "applicable=" with nothing
+    # after it, which tells the reader less than saying nothing.
+    param([object]$Object, [string[]]$Names)
+
+    foreach ($n in $Names) {
+        $value = $null
+        try { $value = $Object.$n } catch { }
+        if ($null -ne $value -and "$value" -ne "") { return "$value" }
+    }
+    return ""
+}
+
 function Test-LnvUnattended {
     # $false only when the module says so outright.
     #
@@ -2708,17 +2728,38 @@ function Invoke-LenovoDriverUpdate {
 
     Write-Host "`n  Driver updates found ($($drivers.Count)):" -ForegroundColor Yellow
     foreach ($d in $drivers) {
-        $size = if ($d.FileSize) { "{0:N1} MB" -f ($d.FileSize / 1MB) } else { "size unknown" }
-        Write-Host ("    {0} {1}" -f $Script:Glyph.Run, "$($d.Title)") -ForegroundColor Gray
-        # IsInstalled is shown alongside IsApplicable because it is what settles
-        # what this tool actually does. LCU's default returns "needed" packages -
-        # applicable and not yet installed - and a Lenovo package is a specific
-        # version, so an older driver already on the machine still counts as not
-        # installed and shows up here. Printing the flag means a real run
-        # confirms that rather than leaving it to be argued from documentation.
-        Write-Host ("      {0} · v{1} · {2} · {3} · {4} · applicable={5} · installed={6} · unattended={7}" -f
-            "$($d.PackageID)", "$($d.Version)", "$($d.ReleaseDate)", "$($d.Severity)",
-            $size, "$($d.IsApplicable)", "$($d.IsInstalled)", "$($d.Installer.Unattended)") -ForegroundColor DarkGray
+        Write-Host ("    {0} {1}" -f $Script:Glyph.Run,
+            (Get-LnvField $d @('Title', 'Name', 'PackageName'))) -ForegroundColor Gray
+
+        # Built from what is there rather than a fixed format string, so a
+        # property this module spells differently costs one field instead of
+        # leaving a row of "name=" with nothing after each one.
+        $bits = @()
+        $id  = Get-LnvField $d @('PackageID', 'ID', 'PackageId')
+        if ($id)  { $bits += $id }
+        $ver = Get-LnvField $d @('Version', 'PackageVersion')
+        if ($ver) { $bits += "v$ver" }
+        $rel = Get-LnvField $d @('ReleaseDate', 'Date')
+        if ($rel) { $bits += $rel }
+        $sev = Get-LnvField $d @('Severity', 'Urgency')
+        if ($sev) { $bits += $sev }
+
+        $raw = Get-LnvField $d @('FileSize', 'Size', 'TotalSize')
+        $bytes = 0
+        if ($raw -and [double]::TryParse($raw, [ref]$bytes) -and $bytes -gt 0) {
+            $bits += ("{0:N1} MB" -f ($bytes / 1MB))
+        }
+
+        # Shown when the module provides it because it is what settles whether
+        # this tool updates outdated drivers or only installs missing ones: a
+        # Lenovo package is a specific version, so an older driver on the machine
+        # still counts as not installed.
+        $inst = Get-LnvField $d @('IsInstalled', 'Installed')
+        if ($inst) { $bits += "installed=$inst" }
+
+        if ($bits.Count -gt 0) {
+            Write-Host ("      " + ($bits -join " · ")) -ForegroundColor DarkGray
+        }
     }
 
     # --- Install. ShouldProcess owns the confirmation; nothing reaches
