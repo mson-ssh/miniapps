@@ -2071,6 +2071,36 @@ function Get-DcuResultText {
     }
 }
 
+# Dell Command Update is a WPF application. Without the .NET Desktop Runtime its
+# installer stops partway and leaves nothing behind, so the runtime is a
+# prerequisite rather than a nicety. 10.0.8 is the floor; winget installs the
+# current 10.0.x, which is above it.
+$Script:DotNetDesktopMin = [version]"10.0.8"
+
+function Get-DotNetDesktopVersion {
+    # Highest Microsoft.WindowsDesktop.App runtime installed, or $null.
+    #
+    # Read off the shared-framework folder rather than asking
+    # "dotnet --list-runtimes": that needs the dotnet host on PATH, and a machine
+    # that has the runtime but never had the SDK usually does not have it there -
+    # which would report "missing" on a machine that is fine.
+    $root = Join-Path $env:ProgramFiles "dotnet\shared\Microsoft.WindowsDesktop.App"
+    if (-not (Test-Path -LiteralPath $root)) { return $null }
+
+    $best = $null
+    foreach ($dir in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+        # Preview folders carry a suffix ("10.0.0-preview.3.12345.6"). A preview
+        # does not count as the release it precedes, so they are skipped rather
+        # than trimmed down to a number they have not earned.
+        if ($dir.Name -match '-') { continue }
+        $v = $null
+        if ([version]::TryParse($dir.Name, [ref]$v)) {
+            if ($null -eq $best -or $v -gt $best) { $best = $v }
+        }
+    }
+    return $best
+}
+
 function Test-RebootPending {
     # Three places Windows records that the machine owes a restart. Any one is
     # enough. Checked up front because dcu-cli will not apply while a reboot is
@@ -2124,7 +2154,7 @@ function Invoke-DellCommandUpdate {
 
     # --- 1. Pre-flight. Each condition reports on its own, so a refusal always
     #        names the one thing that stopped it. ---
-    Write-Host "`n[1/4] Checking this machine..." -ForegroundColor Cyan
+    Write-Host "`n[1/5] Checking this machine..." -ForegroundColor Cyan
 
     $vendor = try { "$((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).Manufacturer)".Trim() } catch { "" }
     if ($vendor -notmatch '(?i)dell') {
@@ -2152,27 +2182,63 @@ function Invoke-DellCommandUpdate {
     }
     Write-Host "      Reboot pending: no" -ForegroundColor DarkGray
 
-    # --- 2. The tool itself, installed on demand ---
+    # --- 2. .NET Desktop Runtime, before anything tries to install DCU ---
+    Write-Host "`n[2/5] Checking the .NET Desktop Runtime..." -ForegroundColor Cyan
+    $dotnet = Get-DotNetDesktopVersion
+    $needRuntime = ($null -eq $dotnet -or $dotnet -lt $Script:DotNetDesktopMin)
+    if ($needRuntime) {
+        $have = if ($dotnet) { "$dotnet" } else { "none installed" }
+        Write-Host "      Found $have, need $($Script:DotNetDesktopMin) or newer." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "      Found $dotnet - meets the $($Script:DotNetDesktopMin) minimum." -ForegroundColor DarkGray
+    }
+
     $dcu = Get-DcuCli
-    if (-not $dcu) {
-        Write-Host "`n[2/4] Dell Command Update is not installed - fetching it..." -ForegroundColor Cyan
-        # An out-of-date client is the usual cause of a failed winget install, so
-        # it is brought current first rather than diagnosed afterwards.
+    $needDcu = ($null -eq $dcu)
+
+    # winget is prepared once, and only when something is actually going to be
+    # fetched - a machine with both prerequisites already in place should not pay
+    # a version check, let alone a 207MB upgrade, to be told it needs nothing.
+    if ($needRuntime -or $needDcu) {
         Write-Host "      winget: $(Get-WingetVersionText)" -ForegroundColor DarkGray
         if (-not (Test-WingetIsCurrent)) {
+            # An out-of-date client is the usual cause of a failed winget install,
+            # so it is brought current first rather than diagnosed afterwards.
             Write-Host "      Out of date or missing - updating it first (~207MB)..." -ForegroundColor Yellow
             Install-AppInstaller
             Write-Host "      winget now: $(Get-WingetVersionText)" -ForegroundColor Gray
         }
         if ($null -eq (Get-WingetVersion)) {
-            Write-Host "`n[ERROR] Winget is unavailable, so DCU cannot be installed." -ForegroundColor Red
+            Write-Host "`n[ERROR] Winget is unavailable, so the prerequisites cannot be installed." -ForegroundColor Red
             return
         }
+    }
+
+    if ($needRuntime) {
+        Write-Host "      Installing .NET Desktop Runtime..." -ForegroundColor Cyan
+        Invoke-WingetInstall -Id 'Microsoft.DotNet.DesktopRuntime.10' | Out-Null
+        $dotnet = Get-DotNetDesktopVersion
+        if ($null -eq $dotnet -or $dotnet -lt $Script:DotNetDesktopMin) {
+            # Stopping here on purpose. Letting the DCU install run without it is
+            # exactly the failure this step exists to prevent: its installer quits
+            # partway and leaves nothing to show for the wait.
+            $have = if ($dotnet) { "$dotnet" } else { "still nothing" }
+            Write-Host "`n[ERROR] .NET Desktop Runtime is $have after the install." -ForegroundColor Red
+            Write-Host "        DCU's installer stops without it, so nothing further was attempted." -ForegroundColor DarkGray
+            return
+        }
+        Write-Host "      Now $dotnet." -ForegroundColor Gray
+    }
+
+    # --- 3. The tool itself ---
+    if ($needDcu) {
+        Write-Host "`n[3/5] Dell Command Update is not installed - fetching it..." -ForegroundColor Cyan
         Invoke-WingetInstall -Id 'Dell.CommandUpdate' | Out-Null
         $dcu = Get-DcuCli
     }
     else {
-        Write-Host "`n[2/4] Dell Command Update is already installed." -ForegroundColor Cyan
+        Write-Host "`n[3/5] Dell Command Update is already installed." -ForegroundColor Cyan
     }
     if (-not $dcu) {
         Write-Host "`n[ERROR] dcu-cli.exe is still not on this machine." -ForegroundColor Red
@@ -2182,10 +2248,10 @@ function Invoke-DellCommandUpdate {
     }
     Write-Host "      $dcu" -ForegroundColor DarkGray
 
-    # --- 3. Scan, drivers only, with both artefacts written to disk ---
+    # --- 4. Scan, drivers only, with both artefacts written to disk ---
     # Called with & rather than Start-Process so dcu-cli's own progress reaches
     # the console; a scan runs for minutes and a hidden window reads as a hang.
-    Write-Host "`n[3/4] Scanning for driver updates..." -ForegroundColor Cyan
+    Write-Host "`n[4/5] Scanning for driver updates..." -ForegroundColor Cyan
     & $dcu /scan -updateType=driver -silent -report="$work" -outputLog="$scanLog"
     $scanCode = $LASTEXITCODE
     $scan = Get-DcuResultText -Code $scanCode
@@ -2222,7 +2288,7 @@ function Invoke-DellCommandUpdate {
         Write-Host ("    {0} [{1}] {2}  {3}{4}" -f $Script:Glyph.Run, "$($u.type)", "$($u.name)", "$($u.version)", $urg) -ForegroundColor Gray
     }
 
-    # --- 4. Apply, only once that has been read and agreed to ---
+    # --- 5. Apply, only once that has been read and agreed to ---
     Write-Host "`n  Install these now? [y/N] " -NoNewline -ForegroundColor Yellow
     if ("$([System.Console]::ReadKey($false).KeyChar)" -notmatch '^[yY]$') {
         Write-Host "`n[Cancelled] Nothing was installed." -ForegroundColor Yellow
@@ -2231,7 +2297,7 @@ function Invoke-DellCommandUpdate {
     }
     Write-Host "`n"
 
-    Write-Host "[4/4] Applying driver updates. This takes a while." -ForegroundColor Cyan
+    Write-Host "[5/5] Applying driver updates. This takes a while." -ForegroundColor Cyan
     # -reboot=disable is the documented way to keep it from restarting.
     # -forceUpdate is deliberately NOT passed: it reinstalls drivers that are
     # already current. -updateType=driver keeps the apply as narrow as the scan;

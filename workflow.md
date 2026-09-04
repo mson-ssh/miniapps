@@ -146,19 +146,26 @@ flowchart TD
 `Update Winget` **đã ẩn** khỏi CLI-TOOL — engine cài đặt tự làm việc đó ở nền (mục 6). Hàm và
 `case` vẫn còn, hiện lại chỉ cần chép lại một dòng đã ghi sẵn trong comment trên `$CliTools`.
 
-`Dell Command Update` chạy 4 bước, không bước nào bỏ được:
+`Dell Command Update` chạy 5 bước, không bước nào bỏ được:
 
 1. **Tiền kiểm** — Dell, Administrator, và **reboot pending** (đọc 3 nguồn: `Component Based
    Servicing\RebootPending`, `WindowsUpdate\Auto Update\RebootRequired`,
    `PendingFileRenameOperations`). Kiểm reboot trước vì `dcu-cli` từ chối apply khi đang treo một
    lần khởi động lại — nó trả mã `5`, nhưng chỉ sau khi đã chạy hết scan.
-2. **Cài DCU nếu thiếu** — đưa **winget lên bản mới trước** rồi mới xin package, vì client cũ là
-   nguyên nhân thường gặp nhất làm `winget install` hỏng. Dùng chung `Test-WingetIsCurrent` với
-   job nền của engine, một hàm duy nhất nên hai chỗ không thể lệch nhau.
-3. **Scan + xuất file** — `/scan -updateType=driver -silent -report=<dir> -outputLog=<file>`,
+2. **.NET Desktop Runtime ≥ 10.0.8** — DCU là ứng dụng WPF; **thiếu runtime thì installer của nó
+   dừng giữa chừng và không để lại gì**. Nên đây là điều kiện tiên quyết, phải xong **trước** khi
+   đụng tới DCU. Dò bằng cách đọc thư mục
+   `%ProgramFiles%\dotnet\shared\Microsoft.WindowsDesktop.App` chứ không hỏi
+   `dotnet --list-runtimes` — lệnh đó cần dotnet host nằm trên PATH, mà máy chỉ có runtime (không
+   có SDK) thường không có, và sẽ báo "thiếu" trên một máy vốn đủ. Cài lại vẫn không đạt ngưỡng
+   thì **dừng hẳn**, không thử cài DCU nữa.
+3. **Cài DCU nếu thiếu** — winget được chuẩn bị **một lần**, và chỉ khi thực sự có thứ cần tải:
+   máy đã đủ cả hai điều kiện thì không phải trả giá một lần kiểm version, nói gì tới 207MB. Dùng
+   chung `Test-WingetIsCurrent` với job nền của engine, một hàm duy nhất nên hai chỗ không lệch.
+4. **Scan + xuất file** — `/scan -updateType=driver -silent -report=<dir> -outputLog=<file>`,
    ghi vào `%TEMP%\MiniApp\DCU\`. Report cũ bị xóa trước, không thì nó bị đọc nhầm thành kết quả
    của lượt này.
-4. **Đọc XML, in ra, rồi mới hỏi** — `DCUApplicableUpdates.xml` có gốc `updates` chứa các `update`
+5. **Đọc XML, in ra, rồi mới hỏi** — `DCUApplicableUpdates.xml` có gốc `updates` chứa các `update`
    mang `type` / `name` / `version` / `Urgency`. Chỉ sau khi anh xác nhận mới chạy
    `/applyUpdates -updateType=driver -silent -reboot=disable -outputLog=<file>`.
 
