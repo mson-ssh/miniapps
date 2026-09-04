@@ -2317,6 +2317,270 @@ function Invoke-DellCommandUpdate {
     Write-Host "`n   Nothing was restarted. Reboot when you are ready." -ForegroundColor DarkGray
 }
 
+# =========================================================================
+# LENOVO DRIVER UPDATE (Lenovo.Client.Update)
+# =========================================================================
+# Built to docs/Lenovo-Global-driver.md. Three of its rules shape everything
+# below and none of them are negotiable:
+#
+#   * LCU is provisioned by an administrator from an approved source. This code
+#     never downloads, installs or updates the module - it detects it and stops
+#     when it is absent.
+#   * No -SkipSignature / -SkipSignatureCheck anywhere, on any cmdlet. They are
+#     simply never passed, so verification stays on by default.
+#   * Drivers only, filtered before anything is downloaded, and never a forced
+#     -Model. A China-SKU machine is reported as unverified rather than served a
+#     Global package.
+$Script:LcuModule = 'Lenovo.Client.Update'
+
+function Get-LnvPackageKind {
+    # LCU's own docs describe the package kind as Category in most places and as
+    # Type in one example, and the spec is explicit that this must not be
+    # hard-coded off a single sample. Both are read, Category first, and the
+    # field that actually carried the value is returned alongside it so a run can
+    # confirm what the provisioned module version does rather than assume it.
+    param([object]$Package)
+    foreach ($field in 'Category', 'Type') {
+        $value = $null
+        try { $value = $Package.$field } catch { }
+        if ($value) { return @{ Field = $field; Value = "$value" } }
+    }
+    return @{ Field = ""; Value = "" }
+}
+
+function Install-LenovoDriverPackage {
+    # The system-changing half, split out so SupportsShouldProcess actually
+    # guards the LCU calls instead of decorating a function that has already made
+    # them. -WhatIf and -Confirm come from PowerShell; the spec forbids declaring
+    # them by hand and forbids a -Force that would let anything past them.
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    param(
+        [Parameter(Mandatory)][object[]]$Package,
+        [Parameter(Mandatory)][string]$CachePath
+    )
+
+    $ids = ($Package | ForEach-Object { "$($_.PackageID)" }) -join ', '
+    if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME,
+            "Install $($Package.Count) Lenovo driver package(s): $ids")) {
+        return $null
+    }
+
+    # Downloaded first, and the download result is checked: installing a package
+    # whose transfer failed would turn a clear download error into a confusing
+    # install error.
+    $saved = @(Save-LnvUpdate -Package $Package -Path $CachePath -ShowProgress -ErrorAction Stop)
+    $badSave = @($saved | Where-Object { "$($_.Status)" -eq 'Failed' })
+    if ($badSave.Count -gt 0) {
+        foreach ($b in $badSave) {
+            Write-Host ("   {0} download failed: {1} - {2}" -f $Script:Glyph.Fail, $b.PackageID, $b.Message) -ForegroundColor Red
+        }
+        return $null
+    }
+
+    return @(Install-LnvUpdate -Package $Package -Path $CachePath -ExportToWMI -ErrorAction Stop)
+}
+
+function Invoke-LenovoDriverUpdate {
+    # Scan first, always. Installing is a second, confirmed step over the list
+    # produced in this same run - never a list carried over from an earlier scan.
+    Write-Host "`n[Lenovo] Driver update via Lenovo.Client.Update" -ForegroundColor Magenta
+
+    $work  = "$env:TEMP\MiniApp\Lenovo"
+    $cache = Join-Path $work "cache"
+    $log   = Join-Path $work "lcu-scan.log"
+    foreach ($d in @($work, $cache)) { if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null } }
+
+    # --- Preflight. Every failure names the one condition that stopped it, and
+    #     nothing is downloaded or executed until all of them pass. ---
+    Write-Host "`n[1/4] Preflight..." -ForegroundColor Cyan
+
+    $cs   = try { Get-CimInstance Win32_ComputerSystem -ErrorAction Stop } catch { $null }
+    $prod = try { Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop } catch { $null }
+    $vendor  = "$($cs.Manufacturer)".Trim()
+    $family  = "$($prod.Version)".Trim()      # e.g. "ThinkPad X1 Carbon Gen 11"
+    $mtm     = "$($cs.Model)".Trim()          # machine type, e.g. "21HM"
+    $serial  = try { "$((Get-CimInstance Win32_BIOS -ErrorAction Stop).SerialNumber)".Trim() } catch { "" }
+
+    if ($vendor -notmatch '(?i)lenovo') {
+        Write-Host "      Manufacturer reads '$vendor' - not a Lenovo machine." -ForegroundColor Yellow
+        return
+    }
+    # Commercial lines only. The spec puts consumer Lenovo out of scope, and LCU
+    # is published for the commercial range.
+    if ($family -notmatch '(?i)think(pad|centre|center|station)') {
+        Write-Host "      Model reads '$family' - not a ThinkPad/ThinkCentre/ThinkStation." -ForegroundColor Yellow
+        Write-Host "      Consumer Lenovo models are out of scope for this tool." -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "      Machine : $family  ($mtm)" -ForegroundColor DarkGray
+    if ($serial) { Write-Host "      Serial  : $serial" -ForegroundColor DarkGray }
+
+    if ([Environment]::OSVersion.Version.Major -lt 10) {
+        Write-Host "      Windows 10 or 11 is required." -ForegroundColor Yellow
+        return
+    }
+    if ($PSVersionTable.PSVersion -lt [version]"5.0") {
+        Write-Host "      PowerShell 5.0 or newer is required (this is $($PSVersionTable.PSVersion))." -ForegroundColor Yellow
+        return
+    }
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+                   [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        Write-Host "      Not running as Administrator." -ForegroundColor Yellow
+        return
+    }
+    Write-Host "      Platform: Windows $([Environment]::OSVersion.Version) · PowerShell $($PSVersionTable.PSVersion) · elevated" -ForegroundColor DarkGray
+
+    if (Test-RebootPending) {
+        Write-Host "`n[STOP] This machine has a restart pending - finish that first." -ForegroundColor Yellow
+        return
+    }
+
+    # LCU is provisioned, never fetched. Auto-installing it, trusting a
+    # repository or relaxing execution policy are all explicitly out of scope,
+    # so a missing module is a stop with instructions rather than a download.
+    $lcu = Get-Module -ListAvailable -Name $Script:LcuModule -ErrorAction SilentlyContinue |
+           Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $lcu) {
+        Write-Host "`n[STOP] $($Script:LcuModule) is not installed on this machine." -ForegroundColor Yellow
+        Write-Host "       It is provisioned by an administrator from an approved source;" -ForegroundColor DarkGray
+        Write-Host "       this tool does not download or update it. Install the approved" -ForegroundColor DarkGray
+        Write-Host "       version, then run this again." -ForegroundColor DarkGray
+        return
+    }
+    try { Import-Module $Script:LcuModule -ErrorAction Stop }
+    catch {
+        Write-Host "`n[STOP] $($Script:LcuModule) $($lcu.Version) could not be imported." -ForegroundColor Yellow
+        Write-Host "       $($_.Exception.Message)" -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "      LCU     : $($Script:LcuModule) $($lcu.Version)" -ForegroundColor DarkGray
+
+    $freeGb = try { [math]::Round((Get-Volume -DriveLetter ($cache.Substring(0,1)) -ErrorAction Stop).SizeRemaining / 1GB, 1) } catch { $null }
+    if ($null -ne $freeGb -and $freeGb -lt 2) {
+        Write-Host "      Only ${freeGb}GB free on the cache drive - need room for downloads." -ForegroundColor Yellow
+        return
+    }
+    Write-Host "      Cache   : $cache$(if ($null -ne $freeGb) { "  (${freeGb}GB free)" })" -ForegroundColor DarkGray
+
+    # --- Scan. No -All: the default already returns only what is needed and
+    #     applicable, and -All would drag in installed and non-applicable
+    #     packages that must never reach the install list. No -Model either -
+    #     forcing one is how a China-SKU machine ends up with a Global package.
+    Write-Host "`n[2/4] Scanning (this uses the network and can take a while)..." -ForegroundColor Cyan
+    $all = $null
+    try { $all = @(Get-LnvUpdate -LogPath $log -ErrorAction Stop) }
+    catch {
+        Write-Host "`n[ERROR] The scan failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "        Log: $log" -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "      $($all.Count) applicable package(s) returned." -ForegroundColor DarkGray
+
+    # --- Filter, before anything is downloaded. BIOS, firmware and applications
+    #     do not pass here even when they arrived in the same scan result. ---
+    Write-Host "`n[3/4] Filtering to unattended driver packages..." -ForegroundColor Cyan
+    $drivers = @()
+    $skipped = @()
+    foreach ($pkg in $all) {
+        $kind = Get-LnvPackageKind -Package $pkg
+        if ($kind.Value -notmatch '(?i)^driver$') {
+            $skipped += @{ Pkg = $pkg; Kind = $kind.Value; Why = "not a driver" }
+            continue
+        }
+        # Lenovo's own guidance: always filter on Installer.Unattended. An
+        # interactive installer waits for input nobody is there to give and
+        # hangs the run.
+        if (-not $pkg.Installer.Unattended) {
+            $skipped += @{ Pkg = $pkg; Kind = $kind.Value; Why = "installer is not unattended" }
+            continue
+        }
+        $drivers += $pkg
+    }
+
+    $kindField = if ($all.Count -gt 0) { (Get-LnvPackageKind -Package $all[0]).Field } else { "" }
+    if ($kindField) { Write-Host "      Package kind read from the '$kindField' property." -ForegroundColor DarkGray }
+
+    if ($skipped.Count -gt 0) {
+        Write-Host "`n  Skipped ($($skipped.Count)):" -ForegroundColor DarkGray
+        foreach ($sk in $skipped) {
+            Write-Host ("    {0} [{1}] {2}  - {3}" -f $Script:Glyph.Skip, $sk.Kind, "$($sk.Pkg.Title)", $sk.Why) -ForegroundColor DarkGray
+        }
+    }
+
+    if ($drivers.Count -eq 0) {
+        Write-Host "`n[OK] No driver updates are needed on this machine." -ForegroundColor Green
+        Write-Host "     Log: $log" -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "`n  Driver updates found ($($drivers.Count)):" -ForegroundColor Yellow
+    foreach ($d in $drivers) {
+        $size = if ($d.FileSize) { "{0:N1} MB" -f ($d.FileSize / 1MB) } else { "size unknown" }
+        Write-Host ("    {0} {1}" -f $Script:Glyph.Run, "$($d.Title)") -ForegroundColor Gray
+        Write-Host ("      {0} · v{1} · {2} · {3} · {4} · applicable={5} · unattended={6}" -f
+            "$($d.PackageID)", "$($d.Version)", "$($d.ReleaseDate)", "$($d.Severity)",
+            $size, "$($d.IsApplicable)", "$($d.Installer.Unattended)") -ForegroundColor DarkGray
+    }
+
+    # --- Install. ShouldProcess owns the confirmation; nothing reaches
+    #     Save-LnvUpdate or Install-LnvUpdate without passing it. ---
+    Write-Host "`n[4/4] Installing..." -ForegroundColor Cyan
+    $results = $null
+    try { $results = Install-LenovoDriverPackage -Package $drivers -CachePath $cache }
+    catch {
+        Write-Host "`n[FAILED] $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "         Log: $log" -ForegroundColor DarkGray
+        return
+    }
+
+    if ($null -eq $results) {
+        Write-Host "`n[NOT PERFORMED] Nothing was downloaded or installed." -ForegroundColor Yellow
+        Write-Host "                Log: $log" -ForegroundColor DarkGray
+        return
+    }
+
+    # --- Per-package results. Every exit code is kept rather than replaced by
+    #     one summary line. ---
+    Write-Host "`n[Lenovo Results]" -ForegroundColor Cyan
+    $failed = 0
+    $action = @()
+    foreach ($r in $results) {
+        $ok = ("$($r.Status)" -match '(?i)success')
+        if (-not $ok) { $failed++ }
+        $glyph = if ($ok) { $Script:Glyph.Ok } else { $Script:Glyph.Fail }
+        $color = if ($ok) { "Green" } else { "Red" }
+        Write-Host ("   {0} {1}" -f $glyph, "$($r.Title)") -ForegroundColor $color
+        Write-Host ("      {0} · status={1} · exit={2} · {3}s" -f
+            "$($r.PackageID)", "$($r.Status)", "$($r.ExitCode)", "$($r.Duration)") -ForegroundColor DarkGray
+        if ("$($r.Message)") { Write-Host ("      {0}" -f "$($r.Message)") -ForegroundColor DarkGray }
+        if ("$($r.ActionNeeded)" -and "$($r.ActionNeeded)" -notmatch '(?i)^(none|false|0)$') {
+            $action += "$($r.Title): $($r.ActionNeeded)"
+        }
+    }
+
+    # --- Outcome, in the four states the spec defines. ---
+    Write-Host ""
+    if ($failed -gt 0) {
+        Write-Host "[FAILED] $failed of $($results.Count) package(s) did not install." -ForegroundColor Red
+    }
+    elseif ($action.Count -gt 0) {
+        Write-Host "[SUCCESS - ACTION NEEDED] All packages installed." -ForegroundColor Yellow
+        foreach ($a in $action) { Write-Host "   $a" -ForegroundColor Yellow }
+    }
+    else {
+        Write-Host "[SUCCESS] All packages installed." -ForegroundColor Green
+    }
+
+    Write-Host "`n   Scan log : $log" -ForegroundColor DarkGray
+    Write-Host   "   Cache    : $cache" -ForegroundColor DarkGray
+    Write-Host   "   History  : root\Lenovo\Lenovo_Updates (exported to WMI)" -ForegroundColor DarkGray
+    # Nothing here restarts anything. A driver can also make another driver newly
+    # applicable, so a second scan is worth suggesting - and only suggesting.
+    Write-Host "`n   Nothing was restarted. After any restart above, run this again -" -ForegroundColor DarkGray
+    Write-Host   "   installing one driver can make another become applicable." -ForegroundColor DarkGray
+}
+
 # The OEM antivirus trials this tool knows to look for. Matched against the
 # DisplayName shown in Programs and Features, so one pattern covers a vendor's
 # several SKUs - LiveSafe, Total Protection, Security Scan, 360 - instead of
@@ -2523,7 +2787,8 @@ $CliTools = @(
     @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension";     Action = "Cpp"          },
     @{ Label = "Remove Office";       Desc = "Force-remove Office 2016-2024 and Microsoft 365";     Action = "RemoveOffice" },
     @{ Label = "Remove Antivirus Trial"; Desc = "Uninstall pre-installed McAfee and Norton trials";  Action = "RemoveAv"     },
-    @{ Label = "Dell Command Update"; Desc = "Install DCU, then update drivers without rebooting";    Action = "Dcu"          }
+    @{ Label = "Dell Command Update"; Desc = "Install DCU, then update drivers without rebooting";    Action = "Dcu"          },
+    @{ Label = "Lenovo - CLI - Driver Update"; Desc = "ThinkPad/Centre/Station drivers via Lenovo.Client.Update"; Action = "Lenovo" }
 )
 
 function Read-CliToolChoice {
@@ -2595,6 +2860,7 @@ function Invoke-CliTools {
             'RemoveOffice' { Invoke-RemoveOffice }
             'RemoveAv'     { Invoke-RemoveAntivirusTrial }
             'Dcu'          { Invoke-DellCommandUpdate }
+            'Lenovo'       { Invoke-LenovoDriverUpdate }
             default  { Write-Host "[ERROR] Unknown tool '$($CliTools[$choice].Action)'." -ForegroundColor Red }
         }
         Write-Host "`nPress any key to return to the tool list..." -ForegroundColor Gray

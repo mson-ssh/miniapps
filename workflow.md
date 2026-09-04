@@ -136,15 +136,54 @@ flowchart TD
     M5 --> T2["2 · Remove Office"]
     M5 --> T3["3 · Remove Antivirus Trial"]
     M5 --> T4["4 · Dell Command Update"]
-    M5 --> T5["5 · Back"]
+    M5 --> T5["5 · Lenovo - CLI - Driver Update"]
+    M5 --> T6["6 · Back"]
     T1 -.->|"xong quay lại danh sách"| M5
     T2 -.->|"xong quay lại danh sách"| M5
     T3 -.->|"xong quay lại danh sách"| M5
     T4 -.->|"xong quay lại danh sách"| M5
+    T5 -.->|"xong quay lại danh sách"| M5
 ```
 
 `Update Winget` **đã ẩn** khỏi CLI-TOOL — engine cài đặt tự làm việc đó ở nền (mục 6). Hàm và
 `case` vẫn còn, hiện lại chỉ cần chép lại một dòng đã ghi sẵn trong comment trên `$CliTools`.
+
+`Lenovo - CLI - Driver Update` làm theo đặc tả [docs/Lenovo-Global-driver.md](docs/Lenovo-Global-driver.md),
+dùng module `Lenovo.Client.Update` (LCU). **Nó khác hẳn tool DCU ở một điểm nền tảng**: DCU được tự
+cài qua winget, còn **LCU thì không bao giờ** — spec bắt buộc quản trị viên cấp phát trước từ nguồn
+đã duyệt, nên thiếu module là *dừng kèm hướng dẫn*, không phải tải về.
+
+Ba điều cấm, không thương lượng:
+
+| Cấm | Vì sao |
+|---|---|
+| `-SkipSignature` / `-SkipSignatureCheck` | không truyền, ở bất kỳ cmdlet nào — xác minh chữ ký luôn bật |
+| Tự cài LCU, đổi execution policy, trust repository | ngoài phạm vi, phải thiết kế và duyệt riêng |
+| Ép `-Model` | đó chính là cách máy China SKU nhận nhầm package Global |
+
+Luồng: preflight (Lenovo commercial → Win10/11 + PS5+ → elevated → reboot pending → LCU import
+được → đủ dung lượng cache) → `Get-LnvUpdate -LogPath` (**không** `-All`: mặc định đã chỉ trả
+package cần và phù hợp) → lọc → báo cáo → xác nhận → `Save-LnvUpdate` → `Install-LnvUpdate
+-ExportToWMI`.
+
+**Lọc phải xong trước khi tải bất cứ gì**, hai tầng: `Category` phải là `Driver`, **và**
+`Installer.Unattended` phải đúng — installer tương tác sẽ đứng chờ một cú bấm không ai đưa và treo
+cả lượt chạy. BIOS/firmware/application bị đẩy sang mục *Skipped* dù chúng đến từ cùng một lượt quét.
+
+Hai chỗ đáng chú ý:
+
+- **`ShouldProcess` là thật, không phải trang trí.** Phần đụng vào máy tách hẳn thành
+  `Install-LenovoDriverPackage` mang `[CmdletBinding(SupportsShouldProcess, ConfirmImpact='High')]`,
+  nên `Save-LnvUpdate` và `Install-LnvUpdate` **nằm bên trong** cửa kiểm. Gắn attribute lên một hàm
+  đã trót gọi module rồi thì chẳng bảo vệ được gì. Không có `-Force` tự chế.
+- **`Category` hay `Type`?** Tài liệu Lenovo dùng cả hai, và spec cấm hard-code theo một ví dụ. Code
+  đọc `Category` trước rồi `Type`, và **in ra trường nào thực sự mang giá trị** để đối chiếu với
+  phiên bản LCU đã duyệt thay vì tin suông.
+
+Kết quả in theo từng package (`PackageID`, `Status`, `ExitCode`, `ActionNeeded`, `Message`,
+`Duration`) và quy về 4 trạng thái: `SUCCESS` / `SUCCESS - ACTION NEEDED` / `NOT PERFORMED` /
+`FAILED`. Không bao giờ `Restart-Computer`; chỉ **đề xuất** quét lại, vì một driver có thể làm
+driver khác mới trở nên applicable.
 
 `Dell Command Update` chạy 5 bước, không bước nào bỏ được:
 
