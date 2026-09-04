@@ -146,15 +146,30 @@ flowchart TD
 `Update Winget` **đã ẩn** khỏi CLI-TOOL — engine cài đặt tự làm việc đó ở nền (mục 6). Hàm và
 `case` vẫn còn, hiện lại chỉ cần chép lại một dòng đã ghi sẵn trong comment trên `$CliTools`.
 
-`Dell Command Update` cập nhật driver máy Dell. Nó đưa **winget lên bản mới trước** rồi mới xin
-package — client cũ là nguyên nhân thường gặp nhất làm `winget install` hỏng, nên sửa trước rẻ hơn
-sửa sau khi đã lỗi. Dùng chung `Test-WingetIsCurrent` với job nền của engine, một hàm duy nhất nên
-hai chỗ không thể lệch nhau.
+`Dell Command Update` chạy 4 bước, không bước nào bỏ được:
 
-Chạy `/scan -silent` trước; **mã thoát 500 nghĩa là driver đã mới nhất** và tool dừng luôn, không
-vào bước apply. Bước apply là `/applyUpdates -updateType=driver -silent -reboot=disable`. Cố ý
-**không** truyền `-forceUpdate` — nó cài lại cả driver đang mới, mất thời gian mà không được gì.
-Đổi `-updateType=driver` thành `driver,bios,firmware` là mở rộng sang BIOS.
+1. **Tiền kiểm** — Dell, Administrator, và **reboot pending** (đọc 3 nguồn: `Component Based
+   Servicing\RebootPending`, `WindowsUpdate\Auto Update\RebootRequired`,
+   `PendingFileRenameOperations`). Kiểm reboot trước vì `dcu-cli` từ chối apply khi đang treo một
+   lần khởi động lại — nó trả mã `5`, nhưng chỉ sau khi đã chạy hết scan.
+2. **Cài DCU nếu thiếu** — đưa **winget lên bản mới trước** rồi mới xin package, vì client cũ là
+   nguyên nhân thường gặp nhất làm `winget install` hỏng. Dùng chung `Test-WingetIsCurrent` với
+   job nền của engine, một hàm duy nhất nên hai chỗ không thể lệch nhau.
+3. **Scan + xuất file** — `/scan -updateType=driver -silent -report=<dir> -outputLog=<file>`,
+   ghi vào `%TEMP%\MiniApp\DCU\`. Report cũ bị xóa trước, không thì nó bị đọc nhầm thành kết quả
+   của lượt này.
+4. **Đọc XML, in ra, rồi mới hỏi** — `DCUApplicableUpdates.xml` có gốc `updates` chứa các `update`
+   mang `type` / `name` / `version` / `Urgency`. Chỉ sau khi anh xác nhận mới chạy
+   `/applyUpdates -updateType=driver -silent -reboot=disable -outputLog=<file>`.
+
+Cố ý **không** truyền `-forceUpdate` — nó cài lại cả driver đang mới, mất thời gian mà không được
+gì. Đổi `-updateType=driver` ở **cả hai** lệnh thành `driver,bios,firmware` là mở rộng sang BIOS.
+
+> **Hai chỗ dễ sai mà code đã chặn.** Report **không đọc được** ≠ **không có update** — gọi máy là
+> "đã mới nhất" khi thực ra không đọc nổi báo cáo là nói dối, nên nhánh đó báo lỗi và không apply
+> gì. Và `@($doc.updates.update)` trên một report rỗng cho ra mảng **1 phần tử `$null`** (bẫy kinh
+> điển của PowerShell), nên phải lọc `Where-Object { $_ }` — thiếu nó thì report rỗng báo
+> "1 update found" rồi in một dòng trắng.
 
 Mã thoát của `dcu-cli` phải đọc mới phân biệt được, vì `0`, `1`, `5` và `500` **đều để máy nguyên
 trạng**:

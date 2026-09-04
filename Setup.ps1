@@ -2071,86 +2071,183 @@ function Get-DcuResultText {
     }
 }
 
+function Test-RebootPending {
+    # Three places Windows records that the machine owes a restart. Any one is
+    # enough. Checked up front because dcu-cli will not apply while a reboot is
+    # pending - it returns 5, but only after running the whole scan first.
+    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") { return $true }
+    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") { return $true }
+    $sm = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" `
+                           -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
+    if ($sm -and $sm.PendingFileRenameOperations) { return $true }
+    return $false
+}
+
+function Read-DcuReport {
+    # DCUApplicableUpdates.xml as dcu-cli writes it: an <updates> root holding
+    # <update> elements carrying type / name / version / Urgency.
+    #
+    # Returns Ok=$false when the file is missing or will not parse. That is not
+    # the same as "no updates found", and the caller must not let one read as
+    # the other - an unreadable report would otherwise look like a clean machine.
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return @{ Ok = $false; Reason = "no report at $Path"; Updates = @() }
+    }
+    try {
+        [xml]$doc = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        # The Where-Object is load-bearing. A report with no <update> children
+        # gives $null here, and @($null) is an array of length one - without the
+        # filter an empty report announces "1 update found" and then prints a
+        # blank row.
+        return @{ Ok = $true; Reason = ""; Updates = @($doc.updates.update | Where-Object { $_ }) }
+    }
+    catch {
+        return @{ Ok = $false; Reason = $_.Exception.Message; Updates = @() }
+    }
+}
+
 function Invoke-DellCommandUpdate {
-    # Installs Dell Command Update through winget, then has it apply driver
-    # updates - without letting it restart the machine.
+    # Installs Dell Command Update if it is missing, scans for driver updates,
+    # shows exactly what it found, and applies them only after that is confirmed
+    # - without letting the machine restart itself.
     Write-Host "`n[DCU] Dell Command Update - driver updates" -ForegroundColor Magenta
 
-    # Dell only. DCU installs happily on any machine and then finds nothing,
-    # which is a long scan to sit through for an answer that was knowable up
-    # front. The manufacturer is printed rather than just refused, so an odd
-    # OEM string is visible instead of looking like a bug.
+    $work = "$env:TEMP\MiniApp\DCU"
+    if (-not (Test-Path $work)) { New-Item -ItemType Directory -Path $work -Force | Out-Null }
+    $reportXml = Join-Path $work "DCUApplicableUpdates.xml"
+    $scanLog   = Join-Path $work "dcu-scan.log"
+    $applyLog  = Join-Path $work "dcu-apply.log"
+    # A report left from a previous run would be read as this run's result.
+    Remove-Item $reportXml -Force -ErrorAction SilentlyContinue
+
+    # --- 1. Pre-flight. Each condition reports on its own, so a refusal always
+    #        names the one thing that stopped it. ---
+    Write-Host "`n[1/4] Checking this machine..." -ForegroundColor Cyan
+
     $vendor = try { "$((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).Manufacturer)".Trim() } catch { "" }
     if ($vendor -notmatch '(?i)dell') {
-        Write-Host "      This machine reports its manufacturer as '$vendor'." -ForegroundColor Yellow
-        Write-Host "      Dell Command Update only serves Dell hardware - stopping here." -ForegroundColor DarkGray
+        Write-Host "      Manufacturer reads '$vendor' - DCU only serves Dell hardware." -ForegroundColor Yellow
         return
     }
     Write-Host "      Manufacturer: $vendor" -ForegroundColor DarkGray
 
-    # --- 1. winget first ---
-    # An out-of-date client is the usual cause of a failed install here, so it
-    # is brought current before the package is asked for rather than after the
-    # failure. Same check the install engine's background job makes.
-    Write-Host "`n[1/3] Checking winget..." -ForegroundColor Cyan
-    Write-Host "      Installed: $(Get-WingetVersionText)" -ForegroundColor DarkGray
-    if (Test-WingetIsCurrent) {
-        Write-Host "      Already current." -ForegroundColor Gray
-    }
-    else {
-        Write-Host "      Out of date or missing - updating it first (~207MB)..." -ForegroundColor Yellow
-        Install-AppInstaller
-        Write-Host "      Now: $(Get-WingetVersionText)" -ForegroundColor Gray
-    }
-    if ($null -eq (Get-WingetVersion)) {
-        Write-Host "`n[ERROR] Winget is still unavailable, so DCU cannot be installed." -ForegroundColor Red
+    # Setup.ps1 elevates at the top of the file, so this cannot fail from the
+    # menu. It is here for the case where this function is lifted out and run on
+    # its own, which is how the Office remover already gets used.
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+                   [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        Write-Host "      Not running as Administrator - dcu-cli needs it." -ForegroundColor Yellow
         return
     }
+    Write-Host "      Administrator: yes" -ForegroundColor DarkGray
 
-    # --- 2. the tool ---
-    Write-Host "`n[2/3] Installing Dell Command Update..." -ForegroundColor Cyan
-    if (-not (Invoke-WingetInstall -Id 'Dell.CommandUpdate')) {
-        Write-Host "      winget could not install it." -ForegroundColor Yellow
+    if (Test-RebootPending) {
+        Write-Host "`n[STOP] This machine has a restart pending." -ForegroundColor Yellow
+        Write-Host "       dcu-cli refuses to apply anything until that is done." -ForegroundColor DarkGray
+        Write-Host "       Reboot, then run this tool again." -ForegroundColor DarkGray
+        return
     }
+    Write-Host "      Reboot pending: no" -ForegroundColor DarkGray
 
+    # --- 2. The tool itself, installed on demand ---
     $dcu = Get-DcuCli
     if (-not $dcu) {
-        Write-Host "`n[ERROR] dcu-cli.exe is not on this machine after the install." -ForegroundColor Red
-        Write-Host "        Some models ship the Universal build instead - try" -ForegroundColor DarkGray
+        Write-Host "`n[2/4] Dell Command Update is not installed - fetching it..." -ForegroundColor Cyan
+        # An out-of-date client is the usual cause of a failed winget install, so
+        # it is brought current first rather than diagnosed afterwards.
+        Write-Host "      winget: $(Get-WingetVersionText)" -ForegroundColor DarkGray
+        if (-not (Test-WingetIsCurrent)) {
+            Write-Host "      Out of date or missing - updating it first (~207MB)..." -ForegroundColor Yellow
+            Install-AppInstaller
+            Write-Host "      winget now: $(Get-WingetVersionText)" -ForegroundColor Gray
+        }
+        if ($null -eq (Get-WingetVersion)) {
+            Write-Host "`n[ERROR] Winget is unavailable, so DCU cannot be installed." -ForegroundColor Red
+            return
+        }
+        Invoke-WingetInstall -Id 'Dell.CommandUpdate' | Out-Null
+        $dcu = Get-DcuCli
+    }
+    else {
+        Write-Host "`n[2/4] Dell Command Update is already installed." -ForegroundColor Cyan
+    }
+    if (-not $dcu) {
+        Write-Host "`n[ERROR] dcu-cli.exe is still not on this machine." -ForegroundColor Red
+        Write-Host "        Some models ship the Universal build - try installing" -ForegroundColor DarkGray
         Write-Host "        Dell.CommandUpdate.Universal by hand and run this again." -ForegroundColor DarkGray
         return
     }
-    Write-Host "      Using $dcu" -ForegroundColor DarkGray
+    Write-Host "      $dcu" -ForegroundColor DarkGray
 
-    # --- 3. scan, then apply ---
+    # --- 3. Scan, drivers only, with both artefacts written to disk ---
     # Called with & rather than Start-Process so dcu-cli's own progress reaches
-    # the console: applying drivers runs for many minutes and a hidden window
-    # reads as a hang.
-    Write-Host "`n[3/3] Scanning for driver updates..." -ForegroundColor Cyan
-    & $dcu /scan -silent
-    $scan = Get-DcuResultText -Code $LASTEXITCODE
+    # the console; a scan runs for minutes and a hidden window reads as a hang.
+    Write-Host "`n[3/4] Scanning for driver updates..." -ForegroundColor Cyan
+    & $dcu /scan -updateType=driver -silent -report="$work" -outputLog="$scanLog"
+    $scanCode = $LASTEXITCODE
+    $scan = Get-DcuResultText -Code $scanCode
     Write-Host ("      Scan: {0}" -f $scan.Text) -ForegroundColor DarkGray
-    if ($LASTEXITCODE -eq 500) {
-        Write-Host "`n[OK] Nothing to install - this machine's drivers are already current." -ForegroundColor Green
+
+    if ($scanCode -eq 500) {
+        Write-Host "`n[OK] Nothing to install - drivers are already current." -ForegroundColor Green
+        Write-Host "     Log: $scanLog" -ForegroundColor DarkGray
+        return
+    }
+    if (-not $scan.Ok) {
+        Write-Host "`n[ERROR] The scan failed - nothing was applied." -ForegroundColor Red
+        Write-Host "        Log: $scanLog" -ForegroundColor DarkGray
         return
     }
 
-    Write-Host "`n      Applying driver updates. This takes a while." -ForegroundColor Cyan
+    $report = Read-DcuReport -Path $reportXml
+    if (-not $report.Ok) {
+        # Deliberately not treated as "no updates": a report that cannot be read
+        # says nothing about the machine, and calling that clean would be a lie.
+        Write-Host "`n[ERROR] The scan report could not be read - $($report.Reason)" -ForegroundColor Red
+        Write-Host "        Nothing was applied. Log: $scanLog" -ForegroundColor DarkGray
+        return
+    }
+    if ($report.Updates.Count -eq 0) {
+        Write-Host "`n[OK] The scan found no driver updates for this machine." -ForegroundColor Green
+        Write-Host "     Report: $reportXml" -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host ("`n  {0} update(s) found:" -f $report.Updates.Count) -ForegroundColor Yellow
+    foreach ($u in ($report.Updates | Sort-Object { "$($_.type)" }, { "$($_.name)" })) {
+        $urg = if ("$($u.Urgency)") { " · $($u.Urgency)" } else { "" }
+        Write-Host ("    {0} [{1}] {2}  {3}{4}" -f $Script:Glyph.Run, "$($u.type)", "$($u.name)", "$($u.version)", $urg) -ForegroundColor Gray
+    }
+
+    # --- 4. Apply, only once that has been read and agreed to ---
+    Write-Host "`n  Install these now? [y/N] " -NoNewline -ForegroundColor Yellow
+    if ("$([System.Console]::ReadKey($false).KeyChar)" -notmatch '^[yY]$') {
+        Write-Host "`n[Cancelled] Nothing was installed." -ForegroundColor Yellow
+        Write-Host "            Report: $reportXml" -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "`n"
+
+    Write-Host "[4/4] Applying driver updates. This takes a while." -ForegroundColor Cyan
     # -reboot=disable is the documented way to keep it from restarting.
     # -forceUpdate is deliberately NOT passed: it reinstalls drivers that are
-    # already current, which is a long detour for no gain on a machine being set
-    # up. -updateType=driver keeps it to drivers, as asked; adding
-    # ",bios,firmware" to that one string widens it.
-    & $dcu /applyUpdates -updateType=driver -silent -reboot=disable
-    $apply = Get-DcuResultText -Code $LASTEXITCODE
+    # already current. -updateType=driver keeps the apply as narrow as the scan;
+    # adding ",bios,firmware" to both strings widens it.
+    & $dcu /applyUpdates -updateType=driver -silent -reboot=disable -outputLog="$applyLog"
+    $applyCode = $LASTEXITCODE
+    $apply = Get-DcuResultText -Code $applyCode
 
     Write-Host "`n[DCU Results]" -ForegroundColor Cyan
-    if ($apply.Ok) {
-        Write-Host ("   {0} {1}" -f $Script:Glyph.Ok, $apply.Text) -ForegroundColor Green
-    }
-    else {
-        Write-Host ("   {0} {1}" -f $Script:Glyph.Fail, $apply.Text) -ForegroundColor Red
-    }
+    if ($apply.Ok) { Write-Host ("   {0} {1}" -f $Script:Glyph.Ok,   $apply.Text) -ForegroundColor Green }
+    else           { Write-Host ("   {0} {1}" -f $Script:Glyph.Fail, $apply.Text) -ForegroundColor Red }
+    Write-Host   ("   Exit code    : {0}" -f $applyCode) -ForegroundColor DarkGray
+    Write-Host   ("   Reboot needed: {0}" -f $(if ($applyCode -eq 1 -or $applyCode -eq 5) { "YES" } else { "no" })) -ForegroundColor DarkGray
+    Write-Host   ("   Report       : {0}" -f $reportXml) -ForegroundColor DarkGray
+    Write-Host   ("   Scan log     : {0}" -f $scanLog) -ForegroundColor DarkGray
+    Write-Host   ("   Apply log    : {0}" -f $applyLog) -ForegroundColor DarkGray
     Write-Host "`n   Nothing was restarted. Reboot when you are ready." -ForegroundColor DarkGray
 }
 
