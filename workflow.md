@@ -134,13 +134,31 @@ flowchart TD
 
     M5 --> T1["1 · Environment for C++"]
     M5 --> T2["2 · Remove Office"]
-    M5 --> T3["3 · Back"]
-    T1 -.->|"chạy inline, xong quay lại danh sách"| M5
-    T2 -.->|"chạy inline, xong quay lại danh sách"| M5
+    M5 --> T3["3 · Remove Antivirus Trial"]
+    M5 --> T4["4 · Back"]
+    T1 -.->|"xong quay lại danh sách"| M5
+    T2 -.->|"xong quay lại danh sách"| M5
+    T3 -.->|"xong quay lại danh sách"| M5
 ```
 
 `Update Winget` **đã ẩn** khỏi CLI-TOOL — engine cài đặt tự làm việc đó ở nền (mục 6). Hàm và
 `case` vẫn còn, hiện lại chỉ cần chép lại một dòng đã ghi sẵn trong comment trên `$CliTools`.
+
+`Remove Antivirus Trial` gỡ McAfee/Norton cài sẵn theo máy mới. Nó **quét trước, in ra danh
+sách tìm được, rồi mới hỏi** — vì `McAfee` và `Norton` là pattern rộng, và người đọc được đúng tên
+sẽ khớp trước khi trả lời thì không thể bị bất ngờ. Ba đường gỡ, xếp theo mức tin cậy:
+
+| Nguồn lệnh | Cách chạy |
+|---|---|
+| `QuietUninstallString` | dùng **nguyên văn** — hãng tự công bố nên nó im lặng theo thiết kế |
+| `MsiExec /I{GUID}` | viết lại thành `/X{GUID} /qn /norestart` — switch của nền MSI, không phải của hãng |
+| còn lại | **không đoán switch**, chạy hiện cửa sổ để kỹ thuật viên bấm tay |
+
+Đường thứ ba là có chủ đích: `UninstallString` của Norton là `InstStub.exe /X /ARP`, và Norton
+**không công bố** switch im lặng nào. Đoán bừa `/S` là chấp nhận rủi ro âm thầm làm sai trên một
+bản quyền khách đã trả tiền. Bản Store app (`McAfee Personal Security`) được gỡ riêng bằng
+`Remove-AppxPackage -AllUsers` **và** `Remove-AppxProvisionedPackage` — thiếu bước thứ hai thì tài
+khoản mới tạo sẽ được cài lại lúc đăng nhập lần đầu.
 
 `Remove Office` chạy đúng `$RemoveOfficeScript` mà job WPS dùng, nhưng qua `Invoke-RemoveOffice`
 — bản foreground có thêm **một câu hỏi `[y/N]`**. Đường job lấy sự đồng ý từ câu hỏi bản quyền

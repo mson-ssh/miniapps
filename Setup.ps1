@@ -2030,6 +2030,200 @@ function Install-CppEnvironment {
     Write-Host "   reach terminals that were already running." -ForegroundColor DarkGray
 }
 
+# The OEM antivirus trials this tool knows to look for. Matched against the
+# DisplayName shown in Programs and Features, so one pattern covers a vendor's
+# several SKUs - LiveSafe, Total Protection, Security Scan, 360 - instead of
+# needing a row each. Adding a vendor is one line.
+$AntivirusTrials = @(
+    @{ Vendor = "McAfee"; Match = 'McAfee' },
+    @{ Vendor = "Norton"; Match = 'Norton' }
+)
+
+function Get-UninstallEntry {
+    # Programs-and-Features entries whose DisplayName matches, across the same
+    # three hives Test-IsInstalled already scans: 64-bit, 32-bit-on-64-bit, and
+    # per-user. DisplayName is what the technician reads on screen, so it is
+    # what gets matched and what gets reported back.
+    param([string]$Pattern)
+
+    $roots = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    return @(Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
+             Where-Object { $_.DisplayName -match $Pattern } |
+             Sort-Object DisplayName -Unique)
+}
+
+function Remove-UninstallEntry {
+    # Drives one Programs-and-Features entry. Three cases, in the order they can
+    # be trusted:
+    #
+    #   QuietUninstallString  the vendor's own silent command. It exists because
+    #                         the vendor published it, so it is used verbatim.
+    #   MsiExec /I{GUID}      rewritten to /X{GUID} /qn /norestart - the same
+    #                         operation, stated the silent way. Safe because MSI
+    #                         switches are the installer platform's, not a
+    #                         vendor's invention.
+    #   anything else         a vendor EXE with no silent contract. Its switches
+    #                         are NOT guessed: Norton's is "InstStub.exe /X /ARP"
+    #                         and nothing silent is documented for it. It runs
+    #                         with its window shown and the technician clicks
+    #                         through - slower, but it cannot quietly do the
+    #                         wrong thing to somebody's paid licence.
+    #
+    # Returns a result object rather than printing, so the caller owns the
+    # report and the summary can count what actually happened.
+    param([object]$Entry)
+
+    $name = "$($Entry.DisplayName)"
+    $quiet = "$($Entry.QuietUninstallString)".Trim()
+    $plain = "$($Entry.UninstallString)".Trim()
+    $cmd = if ($quiet) { $quiet } else { $plain }
+    if (-not $cmd) {
+        return @{ Name = $name; Ok = $false; Mode = "no uninstall command"; Code = $null }
+    }
+
+    $mode = "silent"
+    $file = ""
+    $argline = ""
+
+    if (-not $quiet -and $cmd -match '(?i)msiexec') {
+        # The GUID is the product; /I and /X differ only in direction.
+        if ($cmd -match '(\{[0-9A-Fa-f-]{36}\})') {
+            $file = "msiexec.exe"
+            $argline = "/X$($Matches[1]) /qn /norestart"
+        }
+    }
+    if (-not $file) {
+        if     ($cmd -match '^\s*"([^"]+)"\s*(.*)$') { $file = $Matches[1]; $argline = $Matches[2].Trim() }
+        elseif ($cmd -match '^\s*(.+?\.exe)\s*(.*)$') { $file = $Matches[1]; $argline = $Matches[2].Trim() }
+        else   { $file = $cmd; $argline = "" }
+        if (-not $quiet) { $mode = "interactive - click through its window" }
+    }
+
+    try {
+        # -WindowStyle Hidden even for the silent path: -NoNewWindow hands back a
+        # process whose ExitCode reads null after it has exited.
+        $style = if ($mode -eq 'silent') { 'Hidden' } else { 'Normal' }
+        $proc = if ($argline) {
+            Start-Process -FilePath $file -ArgumentList $argline -Wait -PassThru -WindowStyle $style -ErrorAction Stop
+        } else {
+            Start-Process -FilePath $file -Wait -PassThru -WindowStyle $style -ErrorAction Stop
+        }
+        $code = try { $proc.ExitCode } catch { $null }
+        # 3010 is "done, needs a reboot" - a success, not a fault.
+        $ok = ($null -eq $code -or $code -eq 0 -or $code -eq 3010)
+        return @{ Name = $name; Ok = $ok; Mode = $mode; Code = $code }
+    }
+    catch {
+        return @{ Name = $name; Ok = $false; Mode = $_.Exception.Message; Code = $null }
+    }
+}
+
+function Remove-AntivirusAppx {
+    # The Store-app variant. "McAfee Personal Security" ships this way on most
+    # new consumer machines and never shows up in Programs and Features at all,
+    # so the registry sweep above would report a clean machine while the tile is
+    # still on the Start menu.
+    #
+    # Removed for every account, then de-provisioned as well - without the
+    # second step a newly created account gets it back at first sign-in.
+    param([string]$Pattern)
+
+    $results = @()
+    foreach ($pkg in @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue |
+                       Where-Object { $_.Name -match $Pattern })) {
+        try {
+            Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction Stop
+            $results += @{ Name = "$($pkg.Name) (Store app)"; Ok = $true;  Mode = "removed for all users"; Code = 0 }
+        }
+        catch {
+            $results += @{ Name = "$($pkg.Name) (Store app)"; Ok = $false; Mode = $_.Exception.Message; Code = $null }
+        }
+    }
+    foreach ($prov in @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+                        Where-Object { $_.DisplayName -match $Pattern })) {
+        try {
+            Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName -ErrorAction Stop | Out-Null
+            $results += @{ Name = "$($prov.DisplayName) (provisioned)"; Ok = $true;  Mode = "de-provisioned"; Code = 0 }
+        }
+        catch {
+            $results += @{ Name = "$($prov.DisplayName) (provisioned)"; Ok = $false; Mode = $_.Exception.Message; Code = $null }
+        }
+    }
+    return $results
+}
+
+function Invoke-RemoveAntivirusTrial {
+    # Scans, shows exactly what it found, then asks. The listing is the safety
+    # here rather than the y/N on its own: "Norton" and "McAfee" are broad
+    # patterns, and a technician who can read the matched names before answering
+    # cannot be surprised by what goes.
+    Write-Host "`n[AV] Remove pre-installed antivirus trials" -ForegroundColor Magenta
+    Write-Host "     Scanning Programs and Features and the Store apps..." -ForegroundColor DarkGray
+
+    $found = @()
+    foreach ($t in $AntivirusTrials) {
+        foreach ($e in (Get-UninstallEntry -Pattern $t.Match)) {
+            $found += @{ Vendor = $t.Vendor; Entry = $e; Kind = 'app' }
+        }
+        foreach ($pkg in @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue |
+                           Where-Object { $_.Name -match $t.Match })) {
+            $found += @{ Vendor = $t.Vendor; Entry = $pkg; Kind = 'appx' }
+        }
+    }
+
+    if ($found.Count -eq 0) {
+        Write-Host "`n[OK] Nothing to remove - no McAfee or Norton products on this machine." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "`n  Found:" -ForegroundColor Yellow
+    foreach ($f in $found) {
+        $label = if ($f.Kind -eq 'appx') { "$($f.Entry.Name)  (Store app)" } else { "$($f.Entry.DisplayName)" }
+        Write-Host ("    {0} {1}" -f $Script:Glyph.Run, $label) -ForegroundColor Gray
+    }
+    Write-Host "`n  Remove all of the above? [y/N] " -NoNewline -ForegroundColor Yellow
+    if ("$([System.Console]::ReadKey($false).KeyChar)" -notmatch '^[yY]$') {
+        Write-Host "`n[Cancelled] Nothing was removed." -ForegroundColor Yellow
+        return
+    }
+    Write-Host ""
+
+    $results = @()
+    foreach ($t in $AntivirusTrials) {
+        # Store apps first: they hold no services and go quickly, so the slow
+        # part of the run is not sitting behind them.
+        $results += Remove-AntivirusAppx -Pattern $t.Match
+        foreach ($e in (Get-UninstallEntry -Pattern $t.Match)) {
+            Write-Host "   [+] $($e.DisplayName)..." -ForegroundColor Gray
+            $results += Remove-UninstallEntry -Entry $e
+        }
+    }
+
+    Write-Host "`n[Antivirus Results]" -ForegroundColor Cyan
+    foreach ($r in $results) {
+        if ($r.Ok) {
+            Write-Host ("   {0} {1}  [{2}]" -f $Script:Glyph.Ok, $r.Name, $r.Mode) -ForegroundColor Green
+        }
+        else {
+            $code = if ($null -ne $r.Code) { " exit $($r.Code)" } else { "" }
+            Write-Host ("   {0} {1}  [{2}]{3}" -f $Script:Glyph.Fail, $r.Name, $r.Mode, $code) -ForegroundColor Red
+        }
+    }
+
+    if (@($results | Where-Object { -not $_.Ok }).Count -gt 0) {
+        # Not a fallback that runs itself: these are large vendor tools that
+        # reboot the machine, and that is the technician's call to make.
+        Write-Host "`n   Anything left over needs the vendor's own remover:" -ForegroundColor Yellow
+        Write-Host "     McAfee  MCPR   https://www.mcafee.com/support/?articleId=TS101331" -ForegroundColor DarkGray
+        Write-Host "     Norton  NRnR   https://support.norton.com/sp/en/us/home/current/solutions/v60392881" -ForegroundColor DarkGray
+    }
+    Write-Host "`n[OK] Antivirus removal finished. A reboot is usually needed." -ForegroundColor Green
+}
+
 # Everything the CLI-TOOL window offers. Adding one is a line here plus a case
 # in the switch inside Invoke-CliTools - the numbering, the Back slot and the
 # arrow-key wrapping all size themselves off this table.
@@ -2040,7 +2234,8 @@ function Install-CppEnvironment {
 #     @{ Label = "Update Winget"; Desc = "..."; Action = "Winget" },
 $CliTools = @(
     @{ Label = "Environment for C++"; Desc = "VS Code + MinGW-w64 toolchain + C/C++ extension";     Action = "Cpp"          },
-    @{ Label = "Remove Office";       Desc = "Force-remove Office 2016-2024 and Microsoft 365";     Action = "RemoveOffice" }
+    @{ Label = "Remove Office";       Desc = "Force-remove Office 2016-2024 and Microsoft 365";     Action = "RemoveOffice" },
+    @{ Label = "Remove Antivirus Trial"; Desc = "Uninstall pre-installed McAfee and Norton trials";  Action = "RemoveAv"     }
 )
 
 function Read-CliToolChoice {
@@ -2110,6 +2305,7 @@ function Invoke-CliTools {
             'Winget' { Update-Winget }
             'Cpp'    { Install-CppEnvironment }
             'RemoveOffice' { Invoke-RemoveOffice }
+            'RemoveAv'     { Invoke-RemoveAntivirusTrial }
             default  { Write-Host "[ERROR] Unknown tool '$($CliTools[$choice].Action)'." -ForegroundColor Red }
         }
         Write-Host "`nPress any key to return to the tool list..." -ForegroundColor Gray
